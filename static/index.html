@@ -1,0 +1,79 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Atomic Lead Engine</title>
+<link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+<header>
+  <div class="brand"><span class="logo">⚛</span> Atomic Lead Engine</div>
+  <nav>
+    <button class="tab active" data-view="next">Next lead</button>
+    <button class="tab" data-view="pipeline">Pipeline</button>
+  </nav>
+  <select id="customer" title="Customer" hidden></select>
+  <div id="status" class="status">Loading…</div>
+</header>
+
+<main>
+  <section id="view-next">
+    <div id="lead"></div>
+  </section>
+
+  <section id="view-pipeline" hidden>
+    <div class="toolbar">
+      <select id="filter">
+        <option value="">All analyzed</option>
+        <option value="new">New</option>
+        <option value="saved">Saved</option>
+        <option value="contacted">Contacted</option>
+        <option value="won">Won</option>
+        <option value="not_fit">Not a fit</option>
+        <option value="skipped">Skipped</option>
+      </select>
+      <button id="discover" class="secondary">Find more leads now</button>
+      <a id="export" class="button secondary" href="/api/export.csv">Export CSV</a>
+    </div>
+    <table id="table">
+      <thead><tr><th>Score</th><th>Business</th><th>Industry</th><th>Top opportunity</th><th>Status</th></tr></thead>
+      <tbody></tbody>
+    </table>
+  </section>
+</main>
+
+<footer>Business data © <a href="https://www.openstreetmap.org/copyright" target="_blank" rel="noopener">OpenStreetMap contributors</a> (ODbL). Website checks read public pages only and honor robots.txt.</footer>
+
+<template id="lead-tpl">
+  <article class="card">
+    <div class="lead-head">
+      <div>
+        <h1 class="name"></h1>
+        <div class="meta"></div>
+      </div>
+      <div class="score"><span class="num"></span><span class="grade"></span></div>
+    </div>
+    <p class="summary"></p>
+    <div class="grid">
+      <div class="contact"><h3>Contact</h3><ul></ul></div>
+      <div class="opps"><h3>Opportunities &amp; evidence</h3><div class="opp-list"></div></div>
+    </div>
+    <details class="all-findings"><summary>All findings</summary><ul></ul></details>
+    <div class="brief" hidden><h3>AI brief</h3><div class="brief-body"></div></div>
+    <label class="notes-label">Notes<textarea class="notes" rows="2" placeholder="Call notes, who you spoke with…"></textarea></label>
+    <div class="actions">
+      <button data-act="contacted">✓ Mark contacted</button>
+      <button data-act="saved" class="secondary">Save for later</button>
+      <button data-act="not_fit" class="secondary">Not a fit</button>
+      <button data-act="skipped" class="ghost">Skip →</button>
+      <span class="spacer"></span>
+      <button data-act="brief" class="secondary ai">✨ Write AI brief</button>
+      <button data-act="reanalyze" class="ghost">Re-check site</button>
+    </div>
+  </article>
+</template>
+
+<script src="/static/app.js"></script>
+</body>
+</html>

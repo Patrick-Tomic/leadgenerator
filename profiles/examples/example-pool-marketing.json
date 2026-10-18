@@ -1,0 +1,93 @@
+{
+  "slug": "example-pool-marketing",
+  "name": "Example: Gulf Coast Pool Marketing",
+  "description": "A marketing agency that sells websites and online booking to pool service companies.",
+  "region_label": "Pinellas & Pasco, FL",
+  "active": true,
+  "ready_pool_target": 10,
+  "areas": [
+    "pinellas",
+    "pasco"
+  ],
+  "industries": [
+    "pool",
+    "screen_enclosures"
+  ],
+  "exclusions": {
+    "name_patterns": [
+      "leslie'?s",
+      "pinch a penny"
+    ],
+    "domains": [],
+    "website_statuses": [
+      "restricted"
+    ]
+  },
+  "min_score": 20,
+  "offerings": {
+    "new_website": {
+      "label": "New business website",
+      "codes": [
+        "no_website_confirmed",
+        "no_website_unverified",
+        "social_only",
+        "parked_or_placeholder",
+        "site_dns"
+      ],
+      "pitch": "They don't have a working website of their own, so people who search for them find directories or nothing, and call a competitor instead.",
+      "cap": 50
+    },
+    "website_repair": {
+      "label": "Fix broken / insecure website",
+      "codes": [
+        "site_timeout",
+        "site_connect",
+        "site_http_error",
+        "site_ssl",
+        "site_redirect_loop",
+        "site_other",
+        "no_https",
+        "insecure_form"
+      ],
+      "pitch": "Their current site is failing or showing security warnings to visitors right now.",
+      "cap": 40
+    },
+    "booking_automation": {
+      "label": "Online booking & scheduling automation",
+      "codes": [
+        "no_booking"
+      ],
+      "pitch": "Every appointment is booked by phone; online scheduling and automated reminders save office time.",
+      "cap": 25
+    }
+  },
+  "scoring": {
+    "severity_points": {
+      "high": 14,
+      "medium": 7,
+      "low": 2
+    },
+    "confidence_mult": {
+      "high": 1.0,
+      "medium": 0.7,
+      "low": 0.4
+    },
+    "point_overrides": {
+      "no_website_confirmed": 45,
+      "no_website_unverified": 22,
+      "social_only": 42,
+      "parked_or_placeholder": 42,
+      "site_dns": 32
+    },
+    "contact_bonus": {
+      "phone": 5,
+      "email": 3
+    },
+    "unreachable_multiplier": 0.5,
+    "grade_thresholds": {
+      "A": 60,
+      "B": 40,
+      "C": 20
+    }
+  }
+}

@@ -18,22 +18,27 @@ Optional settings go in a `.env` file (see `.env.example`):
 | `BRAVE_API_KEY` | Website lookup for businesses listed without one. "No website" leads change from low confidence (*unverified*) to high confidence (*confirmed by search*). |
 | `ANTHROPIC_API_KEY` | A **Write AI brief** button: Claude (`claude-opus-5-5`) drafts talking points and a first outreach email from the collected evidence. It runs only when you click it. The request opts in to server-side refusal fallbacks. |
 
-Other knobs (region bounding box, industries, pool size, politeness delays) are in `app/config.py` and can be overridden with environment variables.
+What to look for (service areas, industries, offerings, exclusions, scoring weights) is set per customer in `profiles/*.json` (see [Customer profiles](#customer-profiles)). Operational knobs (politeness delays, scan freshness, retry cooldowns) are in `app/config.py` and can be overridden with environment variables.
 
 ## Using it
 
 - **Next lead**: the highest-scoring unreviewed lead. It shows a summary, contact details, each opportunity with the evidence behind it, and all raw findings. You can mark the lead *contacted*, *save* it, mark it *not a fit*, or *skip* it, and the next one loads. **Re-check site** re-runs the audit.
 - **Pipeline**: every analyzed lead, filterable by status, with CSV export.
+- **Customer selector** (header): appears when more than one profile exists. Leads, statuses, notes, AI briefs and exports are all per customer.
+- Each finding is labeled *confirmed issue* (observed with high confidence), *potential* (missing optional feature or lower-confidence observation), or *couldn't check* (bot protection, robots.txt, unreadable page). Each opportunity shows whether any confirmed finding backs it.
 
 ## How it works
 
 ```
-discovery adapters ──► SQLite ──► website analyzer ──► scoring ──► "next lead"
- (OSM/Overpass)                    (polite fetcher)     (evidence-weighted)
- (Brave: optional website finder)
+                 generic (shared by all customers)                 per customer
+discovery scans ──► dedup ──► leads ──► website audit ──► qualification ──► "next lead"
+(area x industry)  (domain,    (SQLite)  (findings with    (profile: scope,    (customer_leads:
+ OSM/Overpass       phone,                evidence +        offerings,          score, status,
+                    name+place)           confidence)       weights)            notes, brief)
 ```
 
-1. **Discover** (`app/discovery/`). The Overpass API is queried one industry at a time inside the Tampa Bay bounding box. Industries: HVAC, plumbing, electrical, roofing, general contractors, pool service, pressure washing, landscaping, auto repair, cleaning, pest control, and locksmiths. Results are cached for 7 days per industry. Chains and franchises (OSM `brand` tags) are skipped because they rarely buy local web work.
+1. **Discover** (`app/discovery/`, `app/pipeline.py`). Discovery runs as *scans*: one adapter × one named area (county-sized boxes in `config.AREAS`) × one category (25 in `config.INDUSTRIES`). Each scan is logged in `discovery_scans` with mode, counts (found / added / merged) and any error. A scan that never ran is a *full* scan; after `OVERPASS_CACHE_DAYS` (7) it re-runs *incrementally*, fetching only OSM elements edited since the last successful scan (minus a 1-day overlap). Failed scans wait out a cooldown (30 min, doubling, max 24 h) and never stop other scans; 3 failures in a row pause the refill. Chains and franchises (OSM `brand` tags) are skipped because they rarely buy local web work.
+   - **Dedup** (`app/dedup.py`): a record is the same business if it has the same source ID, the same website domain (social/directory hosts ignored), the same 10-digit phone, or the same normalized name within 300 m. Merges only fill missing fields; a newly learned website triggers a re-audit. Every source record is kept in `lead_sources`.
 2. **Analyze** (`app/analysis/`). For each business the analyzer:
    - **Reachability:** DNS, SSL, timeouts, HTTP errors, redirect loops, and an HTTPS check.
    - **Placeholder pages:** parked, placeholder, or suspended pages, and listings that point to a social profile instead of a site.
@@ -42,7 +47,7 @@ discovery adapters ──► SQLite ──► website analyzer ──► scoring
    - **SEO:** title, meta description, H1, `noindex`, image alt text, schema.org markup, sitemap.
    - **Lead capture:** contact or quote forms (including the contact page when the homepage has no form), `mailto:` and insecure forms, click-to-call links.
    - **Booking and chat:** scheduling tools (Calendly, Housecall Pro, Jobber, ServiceTitan, and others) and chat widgets.
-3. **Score** (`app/scoring.py`). Findings map to seven services: new website, repair, redesign, lead capture, booking automation, AI chatbot, and SEO. Points are severity × confidence, capped per service, with a small bonus when a phone number or email is available.
+3. **Qualify** (`app/qualify.py`, `app/scoring.py`). For each customer, a business is in scope if its category is targeted, its location is inside one of the customer's areas, and no exclusion matches. Findings then map to the customer's offerings. Points are severity × confidence, capped per offering, with a small bonus when a phone number or listed email is available. Atomic's profile reproduces the v0.1 scoring exactly. Re-qualifying is pure computation (no network), so changing a profile is cheap.
 
 ### Guarding against false leads
 
@@ -56,6 +61,44 @@ The spec says not to assume a small business needs help, so the scoring is built
   - a domain that no longer resolves, since the business may have moved;
   - JavaScript-rendered pages, whose content the analyzer can't see.
 
+## Customer profiles
+
+Each JSON file in `profiles/` is a customer, synced into the database at startup. `profiles/atomic.json` is the default; `profiles/examples/example-pool-marketing.json` shows a second customer (copy it into `profiles/` to activate it).
+
+| Field | Meaning |
+|---|---|
+| `slug`, `name`, `description` | Identity; `description` and offering labels feed the AI brief prompt. |
+| `areas`, `industries` | Keys from `config.AREAS` / `config.INDUSTRIES`. Unknown keys are rejected at startup. |
+| `exclusions` | `name_patterns` (regex), `domains`, `website_statuses` (e.g. `"restricted"`). |
+| `offerings` | Each: `label`, `pitch`, `codes` (audit findings that indicate a need), `cap` (max points). |
+| `scoring` | `severity_points`, `confidence_mult`, `point_overrides`, `contact_bonus`, `unreachable_multiplier`, `grade_thresholds`. |
+| `min_score`, `ready_pool_target` | Lowest score served as a "next lead"; how many ready leads to keep in stock. |
+
+When a profile changes, that customer's leads are re-scored. Statuses, notes and AI briefs are kept; leads that fall out of scope are removed only if the customer never touched them.
+
+There is no authentication: this is a local single-operator tool. Customer isolation is enforced in every query (`customer_leads` is always filtered by customer), not by login.
+
+## Database and migrations
+
+SQLite at `data/leads.db`. Schema versions are tracked with `PRAGMA user_version` and applied automatically at startup by `app/migrations.py`. Migrations are additive (no tables or columns dropped), each runs in a single transaction, and **before any migration runs on a database that has leads, a full copy is saved to `data/backups/leads-v<old version>-<timestamp>.db`**. A database newer than the code is refused rather than modified.
+
+v1 (this release) adds `customers`, `customer_leads`, `lead_sources`, `discovery_scans` and dedup keys on `leads`. Existing workflow state (score, status, notes, AI brief) is copied to the default customer unchanged. The original columns on `leads` are left as they were, frozen, so the backup or the old code can still be used; the app no longer writes them.
+
+**Stop the old server before upgrading.** A v0.1 process still running against a migrated database would keep writing statuses to the frozen columns, where v0.2 doesn't read them.
+
+## Rate limits, limitations and costs
+
+| Item | Limit / behavior |
+|---|---|
+| Overpass (public instance) | Documented guidance: well under 10,000 queries and 1 GB per day; HTTP 429 when busy. The app runs one query at a time, ≥10 s apart (`OVERPASS_MIN_INTERVAL`), retries 429/504 twice with backoff, and treats Overpass "runtime error" remarks (timeouts returned as HTTP 200) as failures. A full sweep for Atomic is 4 areas × 25 categories = 100 queries; measured 15–41 s each including spacing in testing. |
+| Overpass pagination | Not supported by the API; every match in the area comes back at once. Areas are county-sized to keep responses small. |
+| `newer:` incremental scans | Returns elements *edited* since a date. It doesn't report deletions, so closed businesses stay until marked *not a fit*. |
+| County boxes | Approximate rectangles that overlap, so a business near a border can appear in two areas. Dedup handles the overlap, and scope checks use these boxes rather than legal county lines. |
+| OSM coverage | Good for storefront trades; weak for home-based businesses (many pool, cleaning and pressure-washing operators aren't mapped). |
+| Website audits | ≥2 s between requests to the same host, ≤4 sites at once, 3 MB page cap, robots.txt honored. |
+
+**Operating cost: $0.** OSM and Overpass are free. Brave Search's free tier is optional. Claude is optional and per-click (roughly a few cents per brief at current Opus pricing). SQLite and a local process need no hosting. The only real constraint is the shared public Overpass instance; heavy multi-customer use should move to a self-hosted Overpass or a paid mirror (set `OVERPASS_URL`).
+
 ## Data sources evaluated
 
 | Source | Cost | Coverage | Licensing / terms | Verdict |
@@ -68,7 +111,7 @@ The spec says not to assume a small business needs help, so the scoring is built
 | Florida Sunbiz (Division of Corporations) | Free bulk data files | Every registered FL entity | Public records | Good future adapter for brand-new businesses. It has no website or phone data, so it needs enrichment. |
 | Scraping Google Maps, Yelp, or YellowPages | Free | High | Prohibited by their terms | **Excluded** |
 
-To add a source, subclass `DiscoveryAdapter` (or `WebsiteFinder`) in `app/discovery/base.py` and register it in `app/pipeline.py`. To add an industry, add an entry with Overpass selectors to `INDUSTRIES` in `app/config.py`.
+To add a source, subclass `DiscoveryAdapter` (or `WebsiteFinder`) in `app/discovery/base.py`, raise `SourceError` on failure, set `supports_incremental` if it can fetch only changes, and register it in `app/pipeline.py`. To add a category or area, add it to `INDUSTRIES` or `AREAS` in `app/config.py`, then reference it from a profile.
 
 ## Compliance notes
 
@@ -80,9 +123,9 @@ To add a source, subclass `DiscoveryAdapter` (or `WebsiteFinder`) in `app/discov
 ## Development
 
 ```bash
-.venv/bin/python -m pytest -q        # unit tests for checks, scoring, parsing
+.venv/bin/python -m pytest -q        # audit checks, scoring, migrations, dedup, discovery, customer isolation
 .venv/bin/uvicorn app.main:app --reload
 ```
 
-Project layout: `app/main.py` (API and static UI), `app/pipeline.py` (orchestration), `app/discovery/` (sources), `app/analysis/` (fetcher and checks), `app/scoring.py`, `app/ai.py`, `app/db.py` (SQLite at `data/leads.db`), `static/` (UI).
+Project layout: `app/main.py` (API and static UI), `app/pipeline.py` (scan planning and orchestration), `app/discovery/` (sources), `app/dedup.py`, `app/analysis/` (fetcher and checks), `app/qualify.py` + `app/scoring.py` (per-customer qualification), `app/profiles.py` + `profiles/` (customer config), `app/db.py` + `app/migrations.py` (SQLite), `app/ai.py`, `static/` (UI). `GET /api/scans` lists recent discovery scans with errors.
 # leadgenerator
