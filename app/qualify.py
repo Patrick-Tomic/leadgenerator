@@ -6,6 +6,9 @@ import logging
 from . import db, profiles
 from .scoring import exclusion_reason, score_lead, summarize
 
+# Bump when the scoring logic changes so stored scores are recomputed at startup.
+SCORING_VERSION = 2
+
 log = logging.getLogger(__name__)
 
 
@@ -26,9 +29,10 @@ def qualify(business: dict, profile: dict, industries: set[str], areas: set[str]
     if exclusion_reason(business, profile, areas, industries):
         return None
     findings = business.get("findings") or []
-    scored = score_lead({**business, "email": listed_email(business)}, findings, profile)
+    facts = facts_of(findings)
+    scored = score_lead({**business, "email": listed_email(business)}, findings, profile, facts)
     return {**scored, "summary": summarize(business, business.get("website_status"), scored["opportunities"],
-                                           facts_of(findings), profile)}
+                                           facts, profile, scored["explanation"])}
 
 
 def qualify_business(lead_id: int, customers: list[dict] | None = None) -> int:
@@ -57,9 +61,15 @@ def requalify_customer(customer: dict) -> int:
 
 
 def sync_profiles() -> list[dict]:
-    """Load profiles/*.json into the customers table; requalify customers whose profile changed."""
+    """Load profiles/*.json into the customers table; requalify customers whose profile
+    changed, and every customer last scored by an older scoring version."""
     for p in profiles.load_all():
         cid, changed = db.sync_customer(p)
         if changed:
             requalify_customer(db.get_customer(p["slug"]))
+            db.set_scoring_version(cid, SCORING_VERSION)
+    for cust in db.list_customers(active_only=False):
+        if cust["scoring_version"] < SCORING_VERSION:
+            requalify_customer(cust)
+            db.set_scoring_version(cust["id"], SCORING_VERSION)
     return db.list_customers()

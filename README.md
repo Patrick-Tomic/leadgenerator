@@ -22,10 +22,10 @@ What to look for (service areas, industries, offerings, exclusions, scoring weig
 
 ## Using it
 
-- **Next lead**: the highest-scoring unreviewed lead. It shows a summary, contact details, each opportunity with the evidence behind it, and all raw findings. You can mark the lead *contacted*, *save* it, mark it *not a fit*, or *skip* it, and the next one loads. **Re-check site** re-runs the audit.
+- **Next lead**: the highest-scoring unreviewed lead. A **Strongest evidence** panel shows the specific problem, the evidence and affected page, its confidence, why it may matter, the suggested service, a factual talking point, and how the score was reached. Below it are **Verify before contacting** (what the system couldn't confirm) and the other observations, grouped by signal strength; optional features are collapsed at the bottom. You can mark the lead *contacted*, *save* it, mark it *not a fit*, or *skip* it, and the next one loads. **Re-check site** re-runs the audit.
 - **Pipeline**: every analyzed lead, filterable by status, with CSV export.
 - **Customer selector** (header): appears when more than one profile exists. Leads, statuses, notes, AI briefs and exports are all per customer.
-- Each finding is labeled *confirmed issue* (observed with high confidence), *potential* (missing optional feature or lower-confidence observation), or *couldn't check* (bot protection, robots.txt, unreadable page). Each opportunity shows whether any confirmed finding backs it.
+- Each finding carries a confidence of *verified*, *probable* or *unverified*, and a signal strength: *strong*, *moderate*, *minor*, or *optional feature*. Findings the system couldn't check (bot protection, robots.txt, untested forms) are listed separately and never scored.
 
 ## How it works
 
@@ -40,26 +40,44 @@ discovery scans ──► dedup ──► leads ──► website audit ──�
 1. **Discover** (`app/discovery/`, `app/pipeline.py`). Discovery runs as *scans*: one adapter × one named area (county-sized boxes in `config.AREAS`) × one category (25 in `config.INDUSTRIES`). Each scan is logged in `discovery_scans` with mode, counts (found / added / merged) and any error. A scan that never ran is a *full* scan; after `OVERPASS_CACHE_DAYS` (7) it re-runs *incrementally*, fetching only OSM elements edited since the last successful scan (minus a 1-day overlap). Failed scans wait out a cooldown (30 min, doubling, max 24 h) and never stop other scans; 3 failures in a row pause the refill. Chains and franchises (OSM `brand` tags) are skipped because they rarely buy local web work.
    - **Dedup** (`app/dedup.py`): a record is the same business if it has the same source ID, the same website domain (social/directory hosts ignored), the same 10-digit phone, or the same normalized name within 300 m. Merges only fill missing fields; a newly learned website triggers a re-audit. Every source record is kept in `lead_sources`.
 2. **Analyze** (`app/analysis/`). For each business the analyzer:
-   - **Reachability:** DNS, SSL, timeouts, HTTP errors, redirect loops, and an HTTPS check.
+   - **Reachability:** DNS, SSL, timeouts, HTTP errors, redirect loops, and an HTTPS check. A site is only reported down after failing twice, 5 s apart; one failure followed by success is reported as *intermittent* (probable).
+   - **Broken links:** up to 8 internal links from the homepage, contact/quote/booking pages first, via a ranged GET (first 2 KB). 404/410 is *verified* broken; a 5xx seen twice is *probable*; 401/403/429 and timeouts are recorded as unchecked, not broken.
+   - **Contact information:** whether the site offers any way to get in touch (phone, email, form, contact page), and whether the phone in the business listing appears on the site. A match *verifies* the contact details; a mismatch is reported as *probable* because we can't tell which number is current.
+   - **Claims vs. functionality:** if the page explicitly promises something online ("book online", "online estimates") but has no form, booking tool or matching link, that's reported as *probable* (it may be a JavaScript widget we can't see).
    - **Placeholder pages:** parked, placeholder, or suspended pages, and listings that point to a social profile instead of a site.
    - **Mobile:** whether a viewport tag exists.
    - **Outdated tech:** frames, Flash, legacy tags, jQuery 1.x, WordPress older than 6.0, stale copyright years.
    - **SEO:** title, meta description, H1, `noindex`, image alt text, schema.org markup, sitemap.
-   - **Lead capture:** contact or quote forms (including the contact page when the homepage has no form), `mailto:` and insecure forms, click-to-call links.
+   - **Lead capture:** contact or quote forms (including the contact page when the homepage has no form), `mailto:` and insecure form actions, click-to-call links. **Forms are never submitted.** A form we find is listed as "found, not tested", and nothing claims a form works or fails.
    - **Booking and chat:** scheduling tools (Calendly, Housecall Pro, Jobber, ServiceTitan, and others) and chat widgets.
-3. **Qualify** (`app/qualify.py`, `app/scoring.py`). For each customer, a business is in scope if its category is targeted, its location is inside one of the customer's areas, and no exclusion matches. Findings then map to the customer's offerings. Points are severity × confidence, capped per offering, with a small bonus when a phone number or listed email is available. Atomic's profile reproduces the v0.1 scoring exactly. Re-qualifying is pure computation (no network), so changing a profile is cheap.
+3. **Qualify** (`app/qualify.py`, `app/scoring.py`). For each customer, a business is in scope if its category is targeted, its location is inside one of the customer's areas, and no exclusion matches. It is then scored with the evidence model below. Re-qualifying is pure computation (no network), so changing a profile is cheap.
 
-### Guarding against false leads
+### How a lead is scored (evidence model)
 
-The spec says not to assume a small business needs help, so the scoring is built to resist that:
+Every finding separates **what was observed** (the stored evidence and affected page) from **what it might mean**. The interpretation lives in `app/findings.py`: signal strength, why it may matter, what to verify by hand, and a talking point. A score is built like this:
 
-- A well-built site ends up with only weak signals such as "no chat widget", and it scores low (grade D).
-- Every finding records the exact evidence, for example *"Form action is mailto:joe@…"*, so you can check it before you pitch.
-- Uncertain cases are marked low confidence and score less. These include:
-  - a missing website that search hasn't confirmed;
-  - HTTP 403 or 503 responses, which are often bot protection rather than a broken site;
-  - a domain that no longer resolves, since the business may have moved;
-  - JavaScript-rendered pages, whose content the analyzer can't see.
+1. **Relevance:** only findings mapped to one of the customer's offerings count.
+2. **Value per finding** = signal-strength points × confidence × actionability.
+   - Default points: strong 55, moderate 22, minor 8, optional 2.
+   - Confidence: verified ×1.0, probable ×0.65, unverified ×0.3.
+   - Actionability is below 1 where the opportunity itself is uncertain. A dead domain is ×0.6, because the business may simply have moved.
+3. **No reward for volume:** the strongest finding counts in full, the 2nd at 35%, the 3rd at 15%, and the rest add nothing. All optional features together (no chat widget, no booking tool, missing schema…) add at most 4 points.
+4. **Contact verification:**
+   - listing phone also found on the business's own site: ×1.0;
+   - contact details from the listing only: ×0.9;
+   - contact details from the website only: ×0.85;
+   - no contact details: ×0.5.
+
+| Signal | Examples |
+|---|---|
+| Strong | site fails to load on retry, certificate error, no HTTPS, broken contact/quote page link, no way to contact the business, homepage set to `noindex`, parked/placeholder domain, no website (confirmed by search) |
+| Moderate | intermittent failure, other broken links, phone mismatch, online-booking claim with no path, no mobile viewport, untappable phone number, `mailto:` form, "no website" from the map listing only (unverified) |
+| Minor | no form when phone/email exist, stale copyright year, missing title |
+| Optional | no chat, no booking tool, no schema, no sitemap, alt text, meta description, old jQuery |
+
+Each lead stores an explanation (strongest evidence, main uncertainty, verification list). It appears in the UI, in the CSV export, and in the AI brief prompt. Talking points state what was observed and never claim the business is losing customers or revenue.
+
+Weights are configurable per customer in the profile's `scoring` section (`tier_points`, `confidence_mult`, `decay`, `optional_cap`, `contact_mult`, `point_overrides`, `grade_thresholds`). v0.2 profiles still load: `high/medium/low` confidence keys are mapped automatically, and retired keys (`severity_points`, `contact_bonus`, `cap`) are ignored.
 
 ## Customer profiles
 
@@ -82,7 +100,9 @@ There is no authentication: this is a local single-operator tool. Customer isola
 
 SQLite at `data/leads.db`. Schema versions are tracked with `PRAGMA user_version` and applied automatically at startup by `app/migrations.py`. Migrations are additive (no tables or columns dropped), each runs in a single transaction, and **before any migration runs on a database that has leads, a full copy is saved to `data/backups/leads-v<old version>-<timestamp>.db`**. A database newer than the code is refused rather than modified.
 
-v1 (this release) adds `customers`, `customer_leads`, `lead_sources`, `discovery_scans` and dedup keys on `leads`. Existing workflow state (score, status, notes, AI brief) is copied to the default customer unchanged. The original columns on `leads` are left as they were, frozen, so the backup or the old code can still be used; the app no longer writes them.
+v1 adds `customers`, `customer_leads`, `lead_sources`, `discovery_scans` and dedup keys on `leads`. Existing workflow state (score, status, notes, AI brief) is copied to the default customer unchanged. The original columns on `leads` are left as they were, frozen, so the backup or the old code can still be used; the app no longer writes them.
+
+v2 adds a score explanation per customer lead, the audit version per business, and the scoring version per customer. On first start after upgrading, every customer is re-scored (statuses, notes and AI briefs are kept), and businesses audited by older checks are re-audited in the background so they gain the new link and contact checks.
 
 **Stop the old server before upgrading.** A v0.1 process still running against a migrated database would keep writing statuses to the frozen columns, where v0.2 doesn't read them.
 
@@ -95,7 +115,8 @@ v1 (this release) adds `customers`, `customer_leads`, `lead_sources`, `discovery
 | `newer:` incremental scans | Returns elements *edited* since a date. It doesn't report deletions, so closed businesses stay until marked *not a fit*. |
 | County boxes | Approximate rectangles that overlap, so a business near a border can appear in two areas. Dedup handles the overlap, and scope checks use these boxes rather than legal county lines. |
 | OSM coverage | Good for storefront trades; weak for home-based businesses (many pool, cleaning and pressure-washing operators aren't mapped). |
-| Website audits | ≥2 s between requests to the same host, ≤4 sites at once, 3 MB page cap, robots.txt honored. |
+| Website audits | ≥2 s between requests to the same host, ≤4 sites at once, 3 MB page cap, robots.txt honored. Up to ~12 requests per site (homepage, retry, contact page, 8 links, sitemap); measured ~70 s for 8 sites at 4 in parallel. |
+| What the audit can't see | Content rendered by JavaScript (findings that depend on it are downgraded to *unverified*), form behavior (forms are never submitted), pages beyond the homepage, contact page and 8 links, and anything behind bot protection. |
 
 **Operating cost: $0.** OSM and Overpass are free. Brave Search's free tier is optional. Claude is optional and per-click (roughly a few cents per brief at current Opus pricing). SQLite and a local process need no hosting. The only real constraint is the shared public Overpass instance; heavy multi-customer use should move to a self-hosted Overpass or a paid mirror (set `OVERPASS_URL`).
 
@@ -116,14 +137,15 @@ To add a source, subclass `DiscoveryAdapter` (or `WebsiteFinder`) in `app/discov
 ## Compliance notes
 
 - The crawler identifies itself with an honest User-Agent and honors robots.txt. When robots.txt disallows it, the site is skipped and flagged for manual review.
-- Requests are spaced at least 2 seconds apart per host, at most 4 sites are checked concurrently, and pages are capped at 3 MB.
+- Requests are spaced at least 2 seconds apart per host, at most 4 sites are checked concurrently, and pages are capped at 3 MB. Link checks read only the first 2 KB of each page.
+- No form is ever submitted, and no outreach is sent automatically.
 - Only business contact details that the business publishes (phone, website, `mailto:` addresses on its own site) are stored. No personal data is collected.
 - Outreach by email must follow CAN-SPAM: identify yourself, include a physical address, and honor opt-outs. Calling or texting mobile numbers is subject to the TCPA and Florida's telemarketing laws. Check before cold-calling at scale.
 
 ## Development
 
 ```bash
-.venv/bin/python -m pytest -q        # audit checks, scoring, migrations, dedup, discovery, customer isolation
+.venv/bin/python -m pytest -q        # audit checks, evidence scoring, migrations, dedup, discovery, customer isolation
 .venv/bin/uvicorn app.main:app --reload
 ```
 

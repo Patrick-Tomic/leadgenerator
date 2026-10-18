@@ -50,6 +50,8 @@ function md(text) {
 }
 
 const KIND_LABEL = { confirmed: "confirmed issue", potential: "potential", unavailable: "couldn't check", info: "info" };
+const confChip = (c) => c ? `<span class="chip conf-${esc(c)}">${esc(c)}</span>` : "";
+const link = (u, text) => `<a href="${esc(u)}" target="_blank" rel="noopener">${esc(text || u)}</a>`;
 
 function renderEmpty() {
   const p = status?.pipeline || {};
@@ -76,21 +78,44 @@ function renderLead(lead) {
   $(".contact ul", node).innerHTML = [
     lead.phone && `<li><span class="label">Phone</span><a href="tel:${esc(lead.phone)}">${esc(lead.phone)}</a></li>`,
     lead.email && `<li><span class="label">Email</span><a href="mailto:${esc(lead.email)}">${esc(lead.email)}</a></li>`,
-    site && `<li><span class="label">Website</span><a href="${esc(/^https?:/.test(site) ? site : "http://" + site)}" target="_blank" rel="noopener">${esc(site)}</a></li>`,
+    `<li><span class="label">Website <button class="link-btn" data-act="website">${site ? "Edit" : "Add"}</button></span>${site ? `<a href="${esc(/^https?:/.test(site) ? site : "http://" + site)}" target="_blank" rel="noopener">${esc(site)}</a>` : `<span class="muted">None found</span>`}</li>`,
     lead.address && `<li><span class="label">Address</span>${mapUrl ? `<a href="${mapUrl}" target="_blank" rel="noopener">${esc(lead.address)}</a>` : esc(lead.address)}</li>`,
     `<li><span class="label">Verify</span><a href="${googleUrl}" target="_blank" rel="noopener">Search Google</a>${lead.source_url ? ` · <a href="${esc(lead.source_url)}" target="_blank" rel="noopener">OSM listing</a>` : ""}</li>`,
   ].filter(Boolean).join("");
 
-  const opps = lead.opportunities || [];
-  $(".opp-list", node).innerHTML = opps.length ? opps.map((o) => `
-    <div class="opp">
-      <div class="opp-title"><span>${esc(o.label)}${o.basis ? `<span class="chip kind-${esc(o.basis)}">${esc(o.basis)}</span>` : ""}<span class="chip">${esc(o.confidence)} confidence</span></span><span class="opp-pts">+${o.points}</span></div>
-      <p>${esc(o.pitch)}</p>
-      <ul>${o.evidence.map((e) => `<li>${esc(e)}</li>`).join("")}</ul>
-    </div>`).join("") : `<p>No evidence-backed opportunities found.</p>`;
+  const ex = lead.explanation || {};
+  const st = ex.strongest;
+  if (st) {
+    $(".evidence", node).hidden = false;
+    $(".ev-title", node).innerHTML = `<strong>${esc(st.title)}</strong>${confChip(st.confidence_level)}<span class="chip tier-${st.tier}">${esc(st.tier_label)}</span>`;
+    $(".ev-fields", node).innerHTML = [
+      ["Evidence", esc(st.evidence)],
+      st.page && ["Affected page", link(st.page)],
+      st.impact && ["Why it may matter", esc(st.impact)],
+      ["Suggested service", esc(st.service)],
+      st.talking_point && ["Talking point", `<q>${esc(st.talking_point)}</q>`],
+    ].filter(Boolean).map(([k, v]) => `<dt>${k}</dt><dd>${v}</dd>`).join("");
+  }
+  $(".ev-explain", node).textContent = ex.text || "";
+  if (!st && ex.text) { $(".evidence", node).hidden = false; $(".evidence h3", node).textContent = "Score"; }
+  if ((ex.verify || []).length) {
+    $(".verify", node).hidden = false;
+    $(".verify ul", node).innerHTML = ex.verify.map((v) => `<li>${esc(v)}</li>`).join("");
+  }
 
-  $(".all-findings ul", node).innerHTML = (lead.findings || []).map((f) =>
-    `<li><strong class="sev-${f.severity}">${esc(f.title)}</strong> <span class="chip kind-${f.kind}">${KIND_LABEL[f.kind] || f.kind}</span><span class="chip">${f.severity}</span><span class="chip">${f.confidence} confidence</span><br>${esc(f.evidence)}</li>`).join("");
+  const others = (lead.findings || []).filter((f) => !st || f.code !== st.code);
+  const group = (fs) => fs.map((f) => `
+    <div class="obs">
+      <div><strong>${esc(f.title)}</strong>${confChip(f.confidence_level)}</div>
+      <div class="obs-ev">${esc(f.evidence)}${f.page ? ` · ${link(f.page, "page")}` : ""}</div>
+      ${f.impact ? `<div class="obs-impact">${esc(f.impact)}</div>` : ""}
+    </div>`).join("");
+  const by = (tiers) => others.filter((f) => tiers.includes(f.tier));
+  const main = by(["strong", "moderate", "weak"]), optional = by(["optional"]), unchecked = by(["none"]);
+  $(".obs-list", node).innerHTML =
+    (main.length ? group(main) : `<p class="muted">No other problems observed.</p>`) +
+    (unchecked.length ? `<details open><summary>Couldn't check / not tested (${unchecked.length})</summary>${group(unchecked)}</details>` : "") +
+    (optional.length ? `<details><summary>Optional features, low priority (${optional.length})</summary><p class="muted">Absent nice-to-haves. Not evidence of a problem on their own.</p>${group(optional)}</details>` : "");
   $(".notes", node).value = lead.notes || "";
 
   if (lead.ai_brief) { $(".brief", node).hidden = false; $(".brief-body", node).innerHTML = md(lead.ai_brief); }
@@ -101,6 +126,7 @@ function renderLead(lead) {
   $("#lead").replaceChildren(node);
   $("#lead .notes").addEventListener("change", (e) => api(`/api/leads/${lead.id}`, { method: "POST", body: JSON.stringify({ notes: e.target.value }) }));
   $("#lead .actions").addEventListener("click", onAction);
+  $("#lead .contact").addEventListener("click", onAction);
   window.scrollTo(0, 0);
 }
 
@@ -114,6 +140,11 @@ async function onAction(e) {
     if (act === "brief") {
       btn.textContent = "Writing…";
       renderLead(await api(`/api/leads/${current.id}/brief`, { method: "POST" }));
+    } else if (act === "website") {
+      const url = prompt("Business website (it will be re-checked now):", current.final_url || current.website || "");
+      if (!url || !url.trim()) { btn.disabled = false; return; }
+      btn.textContent = "Checking…";
+      renderLead(await api(`/api/leads/${current.id}/website`, { method: "POST", body: JSON.stringify({ website: url.trim() }) }));
     } else if (act === "reanalyze") {
       btn.textContent = "Checking…";
       renderLead(await api(`/api/leads/${current.id}/reanalyze`, { method: "POST" }));

@@ -15,8 +15,12 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
 from . import ai, config, db, pipeline
+from urllib.parse import urlparse
+
 from .analysis.fetcher import PoliteFetcher
+from .analysis.website import normalize_url
 from .qualify import qualify_business, sync_profiles
+from .findings import TIER_ORDER, enrich
 from .scoring import classify_finding
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
@@ -29,8 +33,9 @@ async def lifespan(app: FastAPI):
     db.close_stale_scans()
     sync_profiles()
     cust = db.get_customer(config.DEFAULT_CUSTOMER)
-    if cust and db.counts(cust["id"], cust["profile"]["min_score"])["ready"] < cust["profile"]["ready_pool_target"]:
-        pipeline.start_refill(cust["slug"])
+    if cust and (db.counts(cust["id"], cust["profile"]["min_score"])["ready"] < cust["profile"]["ready_pool_target"]
+                 or db.stale_audits()):
+        pipeline.start_refill(cust["slug"])  # also re-audits leads checked by an older audit version
     yield
 
 
@@ -51,7 +56,8 @@ def _public(lead: dict | None) -> dict | None:
     lead = dict(lead)
     findings = lead.get("findings") or []
     lead["facts"] = next((f["facts"] for f in findings if f.get("code") == "_facts"), {})
-    lead["findings"] = [{**f, "kind": classify_finding(f)} for f in findings if f.get("code") != "_facts"]
+    lead["findings"] = sorted(({**enrich(f), "kind": classify_finding(f)} for f in findings if f.get("code") != "_facts"),
+                              key=lambda f: (TIER_ORDER[f["tier"]], f["confidence"] != "high"))
     lead["industry_label"] = config.INDUSTRIES.get(lead["industry"], {}).get("label", lead["industry"])
     raw = lead.pop("raw", None) or {}
     lead["source_url"] = raw.get("osm_url")
@@ -89,6 +95,7 @@ def status(customer: str | None = None):
         "industries": {k: config.INDUSTRIES[k]["label"] for k in p["industries"]},
         "search_configured": bool(config.BRAVE_API_KEY),
         "ai_configured": ai.available(),
+        "stale_audits": db.stale_audits(),
     }
 
 
@@ -146,10 +153,31 @@ async def brief(lead_id: int, customer: str | None = None):
     return _public(db.get_lead(cust["id"], lead_id))
 
 
+class WebsiteCorrection(BaseModel):
+    website: str
+
+
+@app.post("/api/leads/{lead_id}/website")
+async def correct_website(lead_id: int, body: WebsiteCorrection, customer: str | None = None):
+    """A person knows the business's real website: store it and re-audit right away."""
+    cust = _customer(customer)
+    _lead_or_404(cust, lead_id)
+    url = normalize_url(body.website)
+    host = urlparse(url).hostname or ""
+    if "." not in host or " " in url:
+        raise HTTPException(400, "That doesn't look like a website address.")
+    db.set_website(lead_id, url)
+    return await _reaudit(cust, lead_id)
+
+
 @app.post("/api/leads/{lead_id}/reanalyze")
 async def reanalyze(lead_id: int, customer: str | None = None):
     cust = _customer(customer)
     _lead_or_404(cust, lead_id)
+    return await _reaudit(cust, lead_id)
+
+
+async def _reaudit(cust: dict, lead_id: int) -> dict:
     fetcher = PoliteFetcher()
     try:
         db.save_analysis(lead_id, await pipeline.analyze_business(db.get_business(lead_id), fetcher))
@@ -173,13 +201,20 @@ def export(customer: str | None = None, status: str | None = None):
     cust = _customer(customer)
     buf = io.StringIO()
     w = csv.writer(buf)
+    # Existing columns keep their order; evidence columns are appended.
     w.writerow(["score", "grade", "status", "name", "industry", "phone", "email", "website", "address",
-                "top_opportunities", "opportunity_basis", "summary", "notes"])
+                "top_opportunities", "opportunity_basis", "summary", "notes",
+                "strongest_issue", "evidence", "confidence", "affected_page", "why_it_may_matter", "suggested_service",
+                "talking_point", "main_uncertainty", "verify_manually"])
     for l in db.list_leads(cust["id"], status, limit=10000):
         opps = l.get("opportunities") or []
+        ex = l.get("explanation") or {}
+        st = ex.get("strongest") or {}
         w.writerow([l["score"], l["grade"], l["status"], l["name"], l["industry"], l["phone"], l["email"],
                     l.get("final_url") or l["website"], l["address"],
-                    "; ".join(o["label"] for o in opps), "; ".join(o.get("basis", "") for o in opps), l["summary"], l["notes"]])
+                    "; ".join(o["label"] for o in opps), "; ".join(o.get("basis", "") for o in opps), l["summary"], l["notes"],
+                    st.get("title"), st.get("evidence"), st.get("confidence_level"), st.get("page"), st.get("impact"),
+                    st.get("service"), st.get("talking_point"), ex.get("uncertainty"), " | ".join(ex.get("verify") or [])])
     buf.seek(0)
     return StreamingResponse(iter([buf.getvalue()]), media_type="text/csv",
                              headers={"Content-Disposition": f"attachment; filename=leads-{cust['slug']}.csv"})

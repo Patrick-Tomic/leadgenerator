@@ -168,7 +168,18 @@ def m001_customers_and_discovery(c: sqlite3.Connection) -> None:
                  FROM leads WHERE analyzed_at IS NOT NULL OR status != 'new' OR notes IS NOT NULL""", (cur.lastrowid,))
 
 
-MIGRATIONS = [m001_customers_and_discovery]
+def m002_evidence_scoring(c: sqlite3.Connection) -> None:
+    """Score explanations per customer lead, audit version per business, scoring version
+    per customer. Purely additive: existing scores, statuses and notes are untouched here;
+    the app recomputes scores (not statuses) at startup because scoring_version starts at 0."""
+    _run(c, """
+        ALTER TABLE customer_leads ADD COLUMN explanation JSON;
+        ALTER TABLE leads ADD COLUMN audit_version INTEGER NOT NULL DEFAULT 1;
+        ALTER TABLE customers ADD COLUMN scoring_version INTEGER NOT NULL DEFAULT 0
+    """)
+
+
+MIGRATIONS = [m001_customers_and_discovery, m002_evidence_scoring]
 LATEST = len(MIGRATIONS)
 
 

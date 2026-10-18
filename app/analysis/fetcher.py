@@ -85,6 +85,20 @@ class PoliteFetcher:
         except httpx.HTTPError:
             return None
 
+    async def link_status(self, url: str) -> tuple[int | None, str | None]:
+        """Status of a linked page via a ranged GET (only the first 2 KB is read).
+        Returns (status, None) or (None, reason) when it couldn't be checked."""
+        if not await self.allowed(url):
+            return None, "robots"
+        await self._wait_turn(urlparse(url).netloc)
+        try:
+            async with self.client.stream("GET", url, headers={"Range": "bytes=0-2047"}) as r:
+                return r.status_code, None
+        except httpx.TimeoutException:
+            return None, "timeout"
+        except httpx.HTTPError as e:
+            return None, type(e).__name__
+
     async def get(self, url: str, check_robots: bool = True) -> FetchResult:
         if check_robots and not await self.allowed(url):
             return FetchResult(url=url, ok=False, error="blocked_by_robots", error_detail="robots.txt disallows this path")

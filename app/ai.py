@@ -18,11 +18,11 @@ Services they offer: {offerings}.
 You get one researched lead with the evidence our automated audit collected. Write:
 1. **Why this lead**: 2-3 sentences on the strongest, evidence-backed opportunity.
 2. **What to offer**: a short bulleted list of specific services, each tied to a finding.
-3. **Talking points**: 3 bullets for a phone call, in plain language a business owner would care about (lost jobs, missed calls, looking unprofessional), not jargon.
+3. **Talking points**: up to 3 bullets for a phone call, in plain language, each stating something we observed and why it may matter. No jargon.
 4. **Outreach email**: a short, friendly, non-pushy first email (under 130 words) with a subject line. Mention one or two concrete observations. No fake familiarity, no invented statistics, no claims we didn't observe.
 5. **Verify before contacting**: anything that's low-confidence or should be checked by hand.
 
-Only use facts in the lead data. Each finding has a "kind": "confirmed" (observed), "potential" (missing optional feature or low confidence) or "unavailable" (we couldn't check). Never present potential or unavailable items as confirmed problems. Use Markdown."""
+Only use facts in the lead data. Lead with the strongest evidence (see "score_explanation"); treat "optional" tier findings (no chat widget, no booking tool, ...) as low priority and never as proof of a problem. Never claim the business is losing customers, leads or revenue; say what we observed and why it *may* matter. Never claim a form fails: forms are never submitted. Each finding has a "kind": "confirmed" (observed), "potential" (missing optional feature or low confidence) or "unavailable" (we couldn't check). Never present potential or unavailable items as confirmed problems. Use Markdown."""
 
 
 def available() -> bool:
@@ -44,7 +44,9 @@ def _lead_payload(lead: dict) -> dict:
         "website_status": lead.get("website_status"),
         "score": lead.get("score"),
         "opportunities": lead.get("opportunities"),
-        "all_findings": [{k: f.get(k) for k in ("title", "evidence", "severity", "confidence", "kind")} for f in lead.get("findings") or []],
+        "score_explanation": lead.get("explanation"),
+        "all_findings": [{k: f.get(k) for k in ("title", "evidence", "page", "confidence_level", "tier", "kind", "impact", "verify")}
+                         for f in lead.get("findings") or []],
     }
 
 

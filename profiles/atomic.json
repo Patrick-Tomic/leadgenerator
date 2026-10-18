@@ -5,12 +5,38 @@
   "region_label": "Tampa Bay, FL",
   "active": true,
   "ready_pool_target": 15,
-  "areas": ["hillsborough", "pinellas", "pasco", "manatee"],
+  "areas": [
+    "hillsborough",
+    "pinellas",
+    "pasco",
+    "manatee"
+  ],
   "industries": [
-    "hvac", "plumbing", "electrical", "roofing", "general_contractor", "pool", "pressure_washing",
-    "landscaping", "auto_repair", "cleaning", "pest_control", "locksmith", "handyman", "painting",
-    "flooring", "fencing", "screen_enclosures", "pavers_concrete", "irrigation", "garage_doors",
-    "appliance_repair", "moving", "towing", "auto_detailing", "solar"
+    "hvac",
+    "plumbing",
+    "electrical",
+    "roofing",
+    "general_contractor",
+    "pool",
+    "pressure_washing",
+    "landscaping",
+    "auto_repair",
+    "cleaning",
+    "pest_control",
+    "locksmith",
+    "handyman",
+    "painting",
+    "flooring",
+    "fencing",
+    "screen_enclosures",
+    "pavers_concrete",
+    "irrigation",
+    "garage_doors",
+    "appliance_repair",
+    "moving",
+    "towing",
+    "auto_detailing",
+    "solar"
   ],
   "exclusions": {
     "name_patterns": [],
@@ -21,53 +47,120 @@
   "offerings": {
     "new_website": {
       "label": "New business website",
-      "codes": ["no_website_confirmed", "no_website_unverified", "social_only", "parked_or_placeholder", "site_dns"],
-      "pitch": "They don't have a working website of their own, so people who search for them find directories or nothing, and call a competitor instead.",
-      "cap": 50
+      "codes": [
+        "no_website_confirmed",
+        "no_website_unverified",
+        "social_only",
+        "parked_or_placeholder",
+        "site_dns"
+      ],
+      "pitch": "Build a website the business controls, so searchers have somewhere to land besides directory listings."
     },
     "website_repair": {
-      "label": "Fix broken / insecure website",
-      "codes": ["site_timeout", "site_connect", "site_http_error", "site_ssl", "site_redirect_loop", "site_other", "no_https", "insecure_form"],
-      "pitch": "Their current site is failing or showing security warnings to visitors right now.",
-      "cap": 40
-    },
-    "redesign": {
-      "label": "Modern, mobile-friendly redesign",
-      "codes": ["no_viewport", "bad_viewport", "frames", "flash", "legacy_markup", "old_jquery", "old_cms", "old_builder", "stale_copyright", "thin_content", "slow"],
-      "pitch": "The site looks dated or breaks on phones, where most local-service searches happen.",
-      "cap": 35
+      "label": "Fix broken or insecure website",
+      "codes": [
+        "site_timeout",
+        "site_connect",
+        "site_http_error",
+        "site_ssl",
+        "site_redirect_loop",
+        "site_other",
+        "site_intermittent",
+        "no_https",
+        "no_https_redirect",
+        "insecure_form",
+        "broken_important_link",
+        "broken_links",
+        "phone_mismatch",
+        "noindex"
+      ],
+      "pitch": "Fix the specific errors visitors currently run into: failing pages, security warnings, broken links or conflicting details."
     },
     "lead_capture": {
-      "label": "Contact / quote-request forms",
-      "codes": ["no_contact_form", "mailto_form", "no_click_to_call"],
-      "pitch": "Visitors who want a quote have no easy way to send one, so after-hours leads are lost.",
-      "cap": 25
+      "label": "Contact and quote-request path",
+      "codes": [
+        "no_contact_path",
+        "claimed_feature_missing",
+        "mailto_form",
+        "no_contact_form",
+        "no_click_to_call"
+      ],
+      "pitch": "Give visitors a clear, working way to call or request a quote from the site."
+    },
+    "redesign": {
+      "label": "Mobile-friendly rebuild",
+      "codes": [
+        "no_viewport",
+        "bad_viewport",
+        "frames",
+        "flash",
+        "old_cms",
+        "old_builder",
+        "stale_copyright",
+        "thin_content",
+        "slow",
+        "legacy_markup",
+        "old_jquery"
+      ],
+      "pitch": "Rebuild the site so it works properly on phones and runs on maintained software."
+    },
+    "seo": {
+      "label": "Technical SEO fixes",
+      "codes": [
+        "no_title",
+        "weak_title",
+        "no_meta_description",
+        "no_h1",
+        "img_alt",
+        "no_schema",
+        "no_sitemap"
+      ],
+      "pitch": "Fix technical basics so search engines can read and list the site correctly."
     },
     "booking_automation": {
-      "label": "Online booking & scheduling automation",
-      "codes": ["no_booking"],
-      "pitch": "Every appointment is booked by phone; online scheduling and automated reminders save office time.",
-      "cap": 10
+      "label": "Online booking & scheduling",
+      "codes": [
+        "no_booking"
+      ],
+      "pitch": "Online scheduling, if they take appointments and want to cut down on phone-only booking."
     },
     "ai_chatbot": {
       "label": "AI chat assistant",
-      "codes": ["no_chat"],
-      "pitch": "An AI assistant could answer common questions and capture leads 24/7.",
-      "cap": 6
-    },
-    "seo": {
-      "label": "Local SEO & technical fixes",
-      "codes": ["no_title", "weak_title", "no_meta_description", "no_h1", "noindex", "img_alt", "no_schema", "no_sitemap"],
-      "pitch": "Basic technical SEO gaps make them harder to find on Google.",
-      "cap": 20
+      "codes": [
+        "no_chat"
+      ],
+      "pitch": "An assistant for common questions, if they get a high volume of repeat inquiries."
     }
   },
   "scoring": {
-    "severity_points": {"high": 14, "medium": 7, "low": 2},
-    "confidence_mult": {"high": 1.0, "medium": 0.7, "low": 0.4},
-    "point_overrides": {"no_website_confirmed": 45, "no_website_unverified": 22, "social_only": 42, "parked_or_placeholder": 42, "site_dns": 32},
-    "contact_bonus": {"phone": 5, "email": 3},
-    "unreachable_multiplier": 0.5,
-    "grade_thresholds": {"A": 60, "B": 40, "C": 20}
+    "tier_points": {
+      "strong": 55,
+      "moderate": 22,
+      "weak": 8,
+      "optional": 2
+    },
+    "confidence_mult": {
+      "verified": 1.0,
+      "probable": 0.65,
+      "unverified": 0.3
+    },
+    "decay": [
+      1.0,
+      0.35,
+      0.15
+    ],
+    "optional_cap": 4,
+    "contact_mult": {
+      "verified": 1.0,
+      "listed": 0.9,
+      "site_only": 0.85,
+      "none": 0.5
+    },
+    "point_overrides": {},
+    "grade_thresholds": {
+      "A": 60,
+      "B": 40,
+      "C": 20
+    }
   }
 }

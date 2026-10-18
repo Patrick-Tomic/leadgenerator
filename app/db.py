@@ -21,11 +21,12 @@ from .profiles import profile_hash
 _lock = threading.RLock()
 _conn: sqlite3.Connection | None = None
 
-JSON_COLS = ("raw", "findings", "opportunities", "profile")
+JSON_COLS = ("raw", "findings", "opportunities", "profile", "explanation")
 STATUSES = ("new", "saved", "contacted", "won", "not_fit", "skipped")
 BUSINESS_COLS = ("id", "source", "source_id", "name", "industry", "address", "city", "lat", "lon", "phone", "email",
                  "website", "raw", "discovered_at", "last_seen_at", "analyzed_at", "website_status", "final_url", "findings")
-CUSTOMER_COLS = ("score", "grade", "opportunities", "summary", "status", "notes", "ai_brief", "status_changed_at", "qualified_at")
+CUSTOMER_COLS = ("score", "grade", "opportunities", "explanation", "summary", "status", "notes", "ai_brief", "status_changed_at",
+                 "qualified_at")
 LEAD_SELECT = (", ".join(f"l.{c}" for c in BUSINESS_COLS) + ", " + ", ".join(f"cl.{c}" for c in CUSTOMER_COLS)
                + ", cl.customer_id FROM customer_leads cl JOIN leads l ON l.id = cl.lead_id")
 READY = "cl.status='new' AND l.analyzed_at IS NOT NULL AND cl.score >= ?"
@@ -146,13 +147,33 @@ def lead_scope(lead_id: int) -> tuple[set[str], set[str]]:
     return {r[0] for r in rows if r[0]}, {r[1] for r in rows if r[1]}
 
 
+def set_website(lead_id: int, url: str) -> None:
+    """Record a person's correction of a business's website. It overrides the source
+    data, is kept as a 'manual' source record for provenance, and the stale audit is
+    cleared so the next audit uses the corrected site."""
+    ts = now()
+    with _lock:
+        c = conn()
+        industry = c.execute("SELECT industry FROM leads WHERE id=?", (lead_id,)).fetchone()[0]
+        c.execute("UPDATE leads SET website=?, norm_domain=?, final_url=NULL, analyzed_at=NULL WHERE id=?",
+                  (url, keys({"website": url})["norm_domain"], lead_id))
+        c.execute(
+            """INSERT INTO lead_sources (lead_id, source, source_id, industry, area, raw, first_seen_at, last_seen_at)
+               VALUES (?, 'manual', ?, ?, NULL, ?, ?, ?)
+               ON CONFLICT (source, source_id) DO UPDATE SET raw=excluded.raw, last_seen_at=excluded.last_seen_at""",
+            (lead_id, f"website/{lead_id}", industry, json.dumps({"website": url, "corrected_at": ts}), ts, ts),
+        )
+        c.commit()
+
+
 def save_analysis(lead_id: int, result: dict) -> None:
     """Store the customer-independent website audit."""
+    from .analysis.website import AUDIT_VERSION
     _write(
         """UPDATE leads SET analyzed_at=?, website_status=?, final_url=?, website=COALESCE(website, ?),
-           email=COALESCE(email, ?), findings=? WHERE id=?""",
+           email=COALESCE(email, ?), findings=?, audit_version=? WHERE id=?""",
         (now(), result["website_status"], result.get("final_url"), result.get("website"), result.get("email"),
-         json.dumps(result["findings"]), lead_id),
+         json.dumps(result["findings"]), AUDIT_VERSION, lead_id),
     )
 
 
@@ -165,10 +186,20 @@ def analyzed_business_ids() -> list[int]:
 
 
 def unanalyzed(limit: int) -> list[dict]:
+    """Businesses needing an audit: never audited first, then ones audited by an older
+    version of the checks (so existing leads gain new checks such as broken links)."""
+    from .analysis.website import AUDIT_VERSION
     rows = conn().execute(
-        "SELECT * FROM leads WHERE analyzed_at IS NULL ORDER BY (website IS NULL), discovered_at LIMIT ?", (limit,)
+        """SELECT * FROM leads WHERE analyzed_at IS NULL OR audit_version < ?
+           ORDER BY analyzed_at IS NOT NULL, (website IS NULL), discovered_at LIMIT ?""", (AUDIT_VERSION, limit)
     ).fetchall()
     return [_row(r) for r in rows]
+
+
+def stale_audits() -> int:
+    from .analysis.website import AUDIT_VERSION
+    return conn().execute("SELECT COUNT(*) FROM leads WHERE analyzed_at IS NOT NULL AND audit_version < ?",
+                          (AUDIT_VERSION,)).fetchone()[0]
 
 
 # ---------------------------------------------------------------- discovery scans
@@ -228,6 +259,10 @@ def sync_customer(profile: dict) -> tuple[int, bool]:
         return cid, True
 
 
+def set_scoring_version(customer_id: int, version: int) -> None:
+    _write("UPDATE customers SET scoring_version=? WHERE id=?", (version, customer_id))
+
+
 def get_customer(slug: str) -> dict | None:
     return _row(conn().execute("SELECT * FROM customers WHERE slug=?", (slug,)).fetchone())
 
@@ -244,11 +279,13 @@ def assign(customer_id: int, lead_id: int, q: dict) -> None:
     """Create or refresh a customer's qualification of a business. Status, notes and
     AI brief are the customer's own work and are never overwritten here."""
     _write(
-        """INSERT INTO customer_leads (customer_id, lead_id, score, grade, opportunities, summary, qualified_at)
-           VALUES (?, ?, ?, ?, ?, ?, ?)
+        """INSERT INTO customer_leads (customer_id, lead_id, score, grade, opportunities, explanation, summary, qualified_at)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?)
            ON CONFLICT (customer_id, lead_id) DO UPDATE SET score=excluded.score, grade=excluded.grade,
-               opportunities=excluded.opportunities, summary=excluded.summary, qualified_at=excluded.qualified_at""",
-        (customer_id, lead_id, q["score"], q["grade"], json.dumps(q["opportunities"]), q["summary"], now()),
+               opportunities=excluded.opportunities, explanation=excluded.explanation, summary=excluded.summary,
+               qualified_at=excluded.qualified_at""",
+        (customer_id, lead_id, q["score"], q["grade"], json.dumps(q["opportunities"]), json.dumps(q.get("explanation")),
+         q["summary"], now()),
     )
 
 

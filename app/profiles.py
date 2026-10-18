@@ -11,13 +11,33 @@ from pathlib import Path
 from . import config
 
 DEFAULT_SCORING = {
-    "severity_points": {"high": 14, "medium": 7, "low": 2},
-    "confidence_mult": {"high": 1.0, "medium": 0.7, "low": 0.4},
+    # Base points by signal strength (see app/findings.py).
+    "tier_points": {"strong": 55, "moderate": 22, "weak": 8, "optional": 2},
+    "confidence_mult": {"verified": 1.0, "probable": 0.65, "unverified": 0.3},
+    # Weight of the 1st, 2nd, 3rd strongest finding; later ones add nothing.
+    "decay": [1.0, 0.35, 0.15],
+    # All optional-feature findings together add at most this many points.
+    "optional_cap": 4,
+    # Multiplier by how well the contact details are verified (see scoring.contact_status).
+    "contact_mult": {"verified": 1.0, "listed": 0.9, "site_only": 0.85, "none": 0.5},
+    # Per-finding base points that replace the tier points (before confidence/actionability).
     "point_overrides": {},
-    "contact_bonus": {"phone": 5, "email": 3},
-    "unreachable_multiplier": 0.5,
     "grade_thresholds": {"A": 60, "B": 40, "C": 20},
 }
+# v0.2 profiles used high/medium/low confidence keys; they map onto the new names.
+_LEGACY_CONFIDENCE = {"high": "verified", "medium": "probable", "low": "unverified"}
+_LEGACY_SCORING_KEYS = ("severity_points", "contact_bonus", "unreachable_multiplier")
+
+
+def _scoring(raw: dict) -> dict:
+    out = {**DEFAULT_SCORING, **{k: v for k, v in (raw or {}).items() if k not in _LEGACY_SCORING_KEYS}}
+    conf = out["confidence_mult"]
+    if any(k in conf for k in _LEGACY_CONFIDENCE):
+        out["confidence_mult"] = {**DEFAULT_SCORING["confidence_mult"],
+                                  **{_LEGACY_CONFIDENCE.get(k, k): v for k, v in conf.items()}}
+    for key in ("tier_points", "confidence_mult", "contact_mult", "grade_thresholds"):
+        out[key] = {**DEFAULT_SCORING[key], **out[key]}
+    return out
 
 
 class ProfileError(ValueError):
@@ -37,10 +57,10 @@ def validate(raw: dict) -> dict:
     if unknown_ind:
         raise ProfileError(f"{p['slug']}: unknown industries {unknown_ind}; choose from {sorted(config.INDUSTRIES)}")
     for key, offer in p["offerings"].items():
-        for field in ("label", "codes", "pitch", "cap"):
+        for field in ("label", "codes", "pitch"):  # "cap" from v0.2 profiles is accepted and ignored
             if field not in offer:
                 raise ProfileError(f"{p['slug']}: offering '{key}' is missing '{field}'")
-    p["scoring"] = {**DEFAULT_SCORING, **p.get("scoring", {})}
+    p["scoring"] = _scoring(p.get("scoring", {}))
     p.setdefault("exclusions", {})
     for k in ("name_patterns", "domains", "website_statuses"):
         p["exclusions"].setdefault(k, [])

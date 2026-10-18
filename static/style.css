@@ -76,3 +76,22 @@ th { color: var(--muted); font-weight: 600; font-size: 12px; text-transform: upp
 tbody tr { cursor: pointer; }
 tbody tr:hover { background: var(--chip); }
 td.num { font-variant-numeric: tabular-nums; font-weight: 700; }
+
+.evidence { border: 1px solid var(--border); border-left: 4px solid var(--accent); border-radius: 8px; padding: 14px 16px; margin-bottom: 16px; }
+.ev-title { font-size: 17px; margin-bottom: 8px; }
+.ev-fields { display: grid; grid-template-columns: 150px 1fr; gap: 6px 12px; margin: 0; font-size: 14px; }
+.ev-fields dt { color: var(--muted); }
+.ev-fields dd { margin: 0; word-break: break-word; }
+.ev-fields q { font-style: italic; }
+.ev-explain { color: var(--muted); font-size: 13px; margin: 10px 0 0; }
+@media (max-width: 760px) { .ev-fields { grid-template-columns: 1fr; } .ev-fields dd { margin-bottom: 6px; } }
+.verify { background: var(--chip); border-radius: 8px; padding: 12px 16px; margin-bottom: 20px; }
+.verify ul { margin: 0; padding-left: 18px; font-size: 14px; }
+.obs { padding: 8px 0; border-bottom: 1px solid var(--border); font-size: 14px; }
+.obs-ev { color: var(--text); }
+.obs-impact, .muted { color: var(--muted); font-size: 13px; }
+.observations details { margin-top: 10px; }
+.observations summary { cursor: pointer; color: var(--muted); }
+.chip.conf-verified { color: var(--good); } .chip.conf-probable { color: var(--med); } .chip.conf-unverified { color: var(--high); }
+.chip.tier-strong { color: var(--high); font-weight: 600; }
+.link-btn { background: none; border: 0; padding: 0 0 0 6px; color: var(--accent); font: inherit; font-size: 12px; font-weight: 600; cursor: pointer; }

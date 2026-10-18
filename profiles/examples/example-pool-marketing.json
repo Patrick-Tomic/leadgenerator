@@ -1,7 +1,7 @@
 {
   "slug": "example-pool-marketing",
   "name": "Example: Gulf Coast Pool Marketing",
-  "description": "A marketing agency that sells websites and online booking to pool service companies.",
+  "description": "A marketing agency that sells websites and online booking to pool service companies. Online booking matters to them, so it carries a little more weight here.",
   "region_label": "Pinellas & Pasco, FL",
   "active": true,
   "ready_pool_target": 10,
@@ -34,11 +34,10 @@
         "parked_or_placeholder",
         "site_dns"
       ],
-      "pitch": "They don't have a working website of their own, so people who search for them find directories or nothing, and call a competitor instead.",
-      "cap": 50
+      "pitch": "Build a website the business controls, so searchers have somewhere to land besides directory listings."
     },
     "website_repair": {
-      "label": "Fix broken / insecure website",
+      "label": "Fix broken or insecure website",
       "codes": [
         "site_timeout",
         "site_connect",
@@ -46,44 +45,63 @@
         "site_ssl",
         "site_redirect_loop",
         "site_other",
+        "site_intermittent",
         "no_https",
-        "insecure_form"
+        "no_https_redirect",
+        "insecure_form",
+        "broken_important_link",
+        "broken_links",
+        "phone_mismatch",
+        "noindex"
       ],
-      "pitch": "Their current site is failing or showing security warnings to visitors right now.",
-      "cap": 40
+      "pitch": "Fix the specific errors visitors currently run into: failing pages, security warnings, broken links or conflicting details."
+    },
+    "lead_capture": {
+      "label": "Contact and quote-request path",
+      "codes": [
+        "no_contact_path",
+        "claimed_feature_missing",
+        "mailto_form",
+        "no_contact_form",
+        "no_click_to_call"
+      ],
+      "pitch": "Give visitors a clear, working way to call or request a quote from the site."
     },
     "booking_automation": {
-      "label": "Online booking & scheduling automation",
+      "label": "Online booking & scheduling",
       "codes": [
         "no_booking"
       ],
-      "pitch": "Every appointment is booked by phone; online scheduling and automated reminders save office time.",
-      "cap": 25
+      "pitch": "Online scheduling, if they take appointments and want to cut down on phone-only booking."
     }
   },
   "scoring": {
-    "severity_points": {
-      "high": 14,
-      "medium": 7,
-      "low": 2
+    "tier_points": {
+      "strong": 55,
+      "moderate": 22,
+      "weak": 8,
+      "optional": 2
     },
     "confidence_mult": {
-      "high": 1.0,
-      "medium": 0.7,
-      "low": 0.4
+      "verified": 1.0,
+      "probable": 0.65,
+      "unverified": 0.3
+    },
+    "decay": [
+      1.0,
+      0.35,
+      0.15
+    ],
+    "optional_cap": 4,
+    "contact_mult": {
+      "verified": 1.0,
+      "listed": 0.9,
+      "site_only": 0.85,
+      "none": 0.5
     },
     "point_overrides": {
-      "no_website_confirmed": 45,
-      "no_website_unverified": 22,
-      "social_only": 42,
-      "parked_or_placeholder": 42,
-      "site_dns": 32
+      "no_booking": 8
     },
-    "contact_bonus": {
-      "phone": 5,
-      "email": 3
-    },
-    "unreachable_multiplier": 0.5,
     "grade_thresholds": {
       "A": 60,
       "B": 40,

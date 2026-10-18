@@ -93,7 +93,7 @@ def test_migration_is_idempotent_and_refuses_newer_schema(tmp_path, monkeypatch)
     path = tmp_path / "old.db"
     make_v0_db(path)
     c = sqlite3.connect(path)
-    assert migrations.migrate(c, path) == [1]
+    assert migrations.migrate(c, path) == list(range(1, migrations.LATEST + 1))
     assert migrations.migrate(c, path) == []  # second run: nothing to do, no second backup
     assert len(list((tmp_path / "backups").iterdir())) == 1
     c.execute(f"PRAGMA user_version = {migrations.LATEST + 1}")
@@ -363,11 +363,11 @@ def test_scoring_is_configurable():
     b = {"name": "X", "industry": "pool", "phone": "1"}
     base = default_profile()
     s1 = score_lead(b, [F_NO_VIEWPORT], base)["score"]
-    heavier = validate({**base, "scoring": {**base["scoring"], "severity_points": {"high": 30, "medium": 7, "low": 2}}})
-    assert score_lead(b, [F_NO_VIEWPORT], heavier)["score"] == s1 + 16
+    heavier = validate({**base, "scoring": {**base["scoring"], "tier_points": {"moderate": 40}}})
+    assert score_lead(b, [F_NO_VIEWPORT], heavier)["score"] > s1
     no_redesign = validate({**base, "offerings": {k: v for k, v in base["offerings"].items() if k != "redesign"}})
     r = score_lead(b, [F_NO_VIEWPORT], no_redesign)
-    assert r["opportunities"] == [] and r["score"] == 5  # contact bonus only
+    assert r["opportunities"] == [] and r["score"] == 0  # not relevant to this customer's services
     strict = validate({**base, "scoring": {**base["scoring"], "grade_thresholds": {"A": 90, "B": 80, "C": 15}}})
     assert score_lead(b, [F_NO_VIEWPORT], strict)["grade"] == "C"
 
@@ -387,8 +387,8 @@ def test_profile_validation():
         validate({**default_profile(), "areas": ["atlantis"]})
     with pytest.raises(ProfileError, match="unknown industries"):
         validate({**default_profile(), "industries": ["alchemy"]})
-    with pytest.raises(ProfileError, match="missing 'cap'"):
-        validate({**default_profile(), "offerings": {"x": {"label": "l", "codes": [], "pitch": "p"}}})
+    with pytest.raises(ProfileError, match="missing 'pitch'"):
+        validate({**default_profile(), "offerings": {"x": {"label": "l", "codes": []}}})
 
 
 def test_finding_kinds_and_opportunity_basis():

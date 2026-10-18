@@ -133,7 +133,7 @@ async def analyze_business(b: dict, fetcher: PoliteFetcher) -> dict:
             findings.append(finding("social_only", "No real website (only a social media page)",
                                     f"Listed website is {website}.", "high"))
         else:
-            site = await analyze_site(website, fetcher)
+            site = await analyze_site(website, fetcher, listing_phone=b.get("phone"))
             status, facts = site["website_status"], site["facts"]
             findings += site["findings"]
             if found_site:
@@ -192,7 +192,9 @@ async def refill(customer_slug: str, force: bool = False) -> None:
             profile = cust["profile"]
             target = profile["ready_pool_target"]
             failures, rounds = 0, 0
-            while (force and rounds == 0) or db.counts(cust["id"], profile["min_score"])["ready"] < target:
+            # Also keep going while older audits are waiting for a re-check with the current checks.
+            while ((force and rounds == 0) or db.counts(cust["id"], profile["min_score"])["ready"] < target
+                   or db.stale_audits() > 0):
                 rounds += 1
                 if rounds > 500:
                     break
