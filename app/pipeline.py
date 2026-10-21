@@ -14,15 +14,18 @@ from . import config, db
 from .analysis.fetcher import PoliteFetcher
 from .analysis.website import analyze_site, finding, is_social, normalize_url
 from .discovery.base import DiscoveryAdapter, SourceError
-from .discovery.brave import DIRECTORY_DOMAINS, _registrable, get_finder
+from .discovery.brave import get_finders
 from .discovery.osm import OverpassAdapter
 from .qualify import qualify_business
+from .websites import verify_website
 
 log = logging.getLogger(__name__)
 
 ADAPTERS: list[DiscoveryAdapter] = [OverpassAdapter()]
 # Re-fetch a little before the last scan so edits that reached the source late aren't missed.
 INCREMENTAL_OVERLAP = timedelta(days=1)
+# Load failures that can be temporary (a dead domain is not in this list).
+TRANSIENT_FAILURES = {"site_timeout", "site_connect", "site_http_error", "site_redirect_loop", "site_other"}
 
 state = {"running": False, "step": "idle", "error": None, "last_run": None, "customer": None}
 _lock = asyncio.Lock()
@@ -98,54 +101,96 @@ async def run_scan(scan: dict) -> dict:
     return {"status": "ok", **stats}
 
 
-async def analyze_business(b: dict, fetcher: PoliteFetcher) -> dict:
-    """Customer-independent website audit for one business."""
+async def analyze_business(b: dict, fetcher: PoliteFetcher, finders: list | None = None) -> dict:
+    """Customer-independent audit: verify which website (if any) is the business's,
+    then audit that site. A missing website field in one source is never treated as
+    'no website'; only checks that actually ran can say that."""
+    finders = get_finders() if finders is None else finders
+    v = await verify_website(b, fetcher, finders)
+    state, best = v["state"], v["best"]
     findings: list[dict] = []
-    website = b.get("website")
-    status = "ok"
-    facts: dict = {}
-    found_site = None
+    facts: dict = {"website_state": state, "website_conflict": v["conflict"]}
+    status = {"unknown": "unknown", "none_found": "none", "possible_match": "uncertain"}.get(state, "ok")
+    from .details import label
+    listed_in = sorted({label(s["source"]) for s in db.lead_sources(b["id"])}) if b.get("id") else [b.get("source", "listing")]
+    ran = [s for s in v["searches"] if s["ran"]]
+    failed = [s for s in v["searches"] if not s["ran"]]
 
-    if not website:
-        finder = get_finder()
-        if finder:
-            try:
-                r = await finder.find_website(b)
-                if r["website"]:
-                    website = found_site = r["website"]
-                else:
-                    listed = sorted({_registrable(urlparse(u).netloc) for u in r["checked"]} & DIRECTORY_DOMAINS)
-                    findings.append(finding("no_website_confirmed", "No business website",
-                                            f'Searched "{r["query"]}": top {len(r["checked"])} results were only directory/social listings'
-                                            + (f" ({', '.join(listed[:5])})" if listed else "") + ".", "high", "high"))
-                    status = "none"
-            except Exception as e:  # search is best-effort
-                log.warning("website search failed for %s: %s", b["name"], e)
-        if not website and status != "none":
-            findings.append(finding("no_website_unverified", "No website listed",
-                                    "OpenStreetMap lists no website for this business. Not confirmed by web search; check Google before pitching.",
-                                    "high", "low"))
-            status = "unverified"
+    if state == "unknown":
+        why = "no website search source is configured" if not v["searches"] else \
+              f"website search failed ({'; '.join(s['error'] for s in failed)[:120]})"
+        findings.append(finding("website_unknown", "Website status unknown",
+                                f"No website on the {', '.join(listed_in)} record, and {why}. Missing from a listing "
+                                "doesn't mean the business has no website.", "low", "low"))
+    elif state == "none_found":
+        detail = "; ".join(f"{s['source']}: {', '.join(s['queries'])} ({s['results']} results"
+                           + (f", only directories such as {', '.join(s['directories'][:3])}" if s["directories"] else "") + ")"
+                           for s in ran)
+        # One search source can miss a site; two independent ones agreeing is stronger.
+        findings.append(finding("no_website_confirmed", "No website found",
+                                f"No website on the listing(s) and no matching site from: {detail}.", "high",
+                                "high" if len(ran) >= 2 else "medium"))
+    elif state == "possible_match":
+        cands = [c for c in v["candidates"] if c["check_status"] not in ("social", "directory")]
+        findings.append(finding("website_match_uncertain", "Possible website, match uncertain",
+                                "; ".join(f"{c['url']} ({c['source']}: {', '.join(c['match_evidence'][-2:])})" for c in cands[:3]),
+                                "low", "low"))
+    if v["conflict"]:
+        real = [c for c in v["candidates"] if c["identity"] in ("high", "medium") and c["check_status"] not in ("dns", "social", "directory")]
+        findings.append(finding("website_conflict", "Sources disagree about the website",
+                                "; ".join(f"{c['url']} from {c['source']}" for c in real[:4]), "low", "high"))
 
-    if website:
-        if is_social(normalize_url(website)):
-            status = "social_only"
-            findings.append(finding("social_only", "No real website (only a social media page)",
-                                    f"Listed website is {website}.", "high"))
-        else:
-            site = await analyze_site(website, fetcher, listing_phone=b.get("phone"))
-            status, facts = site["website_status"], site["facts"]
-            findings += site["findings"]
-            if found_site:
-                findings.insert(0, finding("website_found_by_search", "Website found via search",
-                                           f"Not listed in map data; matched {found_site} in search results.", "low", "medium"))
+    if best and state in ("verified", "found_unverified", "unreachable"):
+        site = await analyze_site(best["url"], fetcher, listing_phone=b.get("phone"))
+        status = site["website_status"]
+        facts.update(site["facts"])
+        # Two failures seconds apart can be one short outage. A load failure is only
+        # verified if the previous audit (hours or days earlier) also found the site down.
+        was_down = b.get("website_status") == "down" and b.get("analyzed_at")
+        for f in site["findings"]:
+            if f["code"] in TRANSIENT_FAILURES and f["confidence"] == "high" and not was_down:
+                f["confidence"] = "medium"
+                f["evidence"] += " First audit to see this; it counts as verified if the next audit also fails."
+            elif f["code"] in TRANSIENT_FAILURES and was_down:
+                f["evidence"] += f" Also down at the previous audit ({b['analyzed_at'][:10]})."
+        findings += site["findings"]
+        if state == "found_unverified":
+            findings.insert(0, finding("website_identity_unconfirmed", "Website found, not yet verified",
+                                       f"{best['url']} ({best['source']}): {'; '.join(best['match_evidence'][-3:])}. "
+                                       "Its pages didn't confirm the business's phone or address.", "low", "high",
+                                       page=best["url"]))
+        if best["source"] not in ("osm", "manual") and not best["source"].startswith("sunbiz"):
+            findings.insert(0, finding("website_found_by_search", "Website found by search",
+                                       f"Not on the listing; found via {best['source']}: {'; '.join(best['match_evidence'])}.",
+                                       "low", "high", page=best["url"]))
+    elif best and best["check_status"] == "social":
+        # The only web presence we found is a social profile. "No own site" is verified
+        # only if a search also came up empty.
+        findings.append(finding("social_only", "Only a social media page found",
+                                f"Listed website is {best['url']}.", "high", "high" if ran else "medium", page=best["url"]))
+        status = "social_only"
 
+    # A state registration is a legal entity; it counts as a sales signal only with
+    # evidence the business is operating (another independent listing or a live website).
+    sources = db.lead_sources(b["id"]) if b.get("id") else []
+    reg = next((s for s in sources if s["source"].startswith("sunbiz")), None)
+    if reg:
+        rf = reg.get("fields") or {}
+        others = sorted({s["source"] for s in sources if not s["source"].startswith("sunbiz") and s["source"] != "manual"})
+        operating = others or state in ("verified", "found_unverified")
+        evidence = (f"Filed {rf.get('filing_date')} as {rf.get('entity_type')} (document {rf.get('doc_number')}). "
+                    + (f"Operating evidence: listed on {', '.join(others)}" if others else
+                       "Operating evidence: a website was found" if operating else
+                       "No evidence yet that it's operating; the filed address may be a registered or home address."))
+        findings.append(finding("new_registration", "Recently registered business", evidence, "medium",
+                                "high" if operating else "low"))
+    facts["website_candidates"] = len(v["candidates"])
     return {
         "website_status": status,
         "final_url": facts.get("final_url"),
-        "website": found_site,
+        "website": None,  # the canonical site is persisted by verify_website
         "email": b.get("email") or (facts.get("emails") or [None])[0],
-        "findings": findings + ([{"code": "_facts", "facts": facts}] if facts else []),
+        "findings": findings + [{"code": "_facts", "facts": facts}],
     }
 
 

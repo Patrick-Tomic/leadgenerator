@@ -21,10 +21,11 @@ from .profiles import profile_hash
 _lock = threading.RLock()
 _conn: sqlite3.Connection | None = None
 
-JSON_COLS = ("raw", "findings", "opportunities", "profile", "explanation")
+JSON_COLS = ("raw", "findings", "opportunities", "profile", "explanation", "fields", "metadata", "match_evidence", "flags")
 STATUSES = ("new", "saved", "contacted", "won", "not_fit", "skipped")
 BUSINESS_COLS = ("id", "source", "source_id", "name", "industry", "address", "city", "lat", "lon", "phone", "email",
-                 "website", "raw", "discovered_at", "last_seen_at", "analyzed_at", "website_status", "final_url", "findings")
+                 "website", "raw", "discovered_at", "last_seen_at", "analyzed_at", "website_status", "final_url", "findings",
+                 "website_state", "website_conflict", "website_checked_at")
 CUSTOMER_COLS = ("score", "grade", "opportunities", "explanation", "summary", "status", "notes", "ai_brief", "status_changed_at",
                  "qualified_at")
 LEAD_SELECT = (", ".join(f"l.{c}" for c in BUSINESS_COLS) + ", " + ", ".join(f"cl.{c}" for c in CUSTOMER_COLS)
@@ -89,10 +90,19 @@ def find_existing(b: dict) -> tuple[int, str] | None:
         if r:
             return r[0], "phone"
     if k["norm_name"]:
-        for r in c.execute("SELECT id, lat, lon, city FROM leads WHERE norm_name=? ORDER BY id", (k["norm_name"],)).fetchall():
+        for r in c.execute("SELECT id, lat, lon, city, address FROM leads WHERE norm_name=? ORDER BY id", (k["norm_name"],)).fetchall():
             if same_place(dict(r), b):
                 return r["id"], "name+location"
     return None
+
+
+MATCH_EXPLANATION = {
+    "new": ("high", "created this business record"),
+    "source_id": ("high", "same source record seen again"),
+    "domain": ("high", "same website domain"),
+    "phone": ("high", "same 10-digit phone number"),
+    "name+location": ("medium", "same normalized name at the same location"),
+}
 
 
 def upsert_business(b: dict, area: str | None = None) -> str:
@@ -103,6 +113,7 @@ def upsert_business(b: dict, area: str | None = None) -> str:
     with _lock:
         c = conn()
         match = find_existing(b)
+        rule = match[1] if match else "new"
         if match is None:
             k = keys(b)
             cur = c.execute(
@@ -131,12 +142,24 @@ def upsert_business(b: dict, area: str | None = None) -> str:
                 c.execute("UPDATE leads SET norm_phone=? WHERE id=?", (keys(b)["norm_phone"], lead_id))
             if b.get("website") and not existing["website"]:
                 c.execute("UPDATE leads SET norm_domain=? WHERE id=?", (keys(b)["norm_domain"], lead_id))
+        conf, why = MATCH_EXPLANATION[rule]
+        fields = b.get("fields") or {k: b[k] for k in ("name", "address", "city", "phone", "email", "website") if b.get(k)}
         c.execute(
-            """INSERT INTO lead_sources (lead_id, source, source_id, industry, area, raw, first_seen_at, last_seen_at)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-               ON CONFLICT (source, source_id) DO UPDATE SET last_seen_at=excluded.last_seen_at, raw=excluded.raw""",
-            (lead_id, b["source"], b["source_id"], b["industry"], area, raw, ts, ts),
+            """INSERT INTO lead_sources (lead_id, source, source_id, industry, area, raw, first_seen_at, last_seen_at,
+                                         source_url, fields, match_confidence, match_explanation, metadata, last_checked_at)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+               ON CONFLICT (source, source_id) DO UPDATE SET last_seen_at=excluded.last_seen_at, raw=excluded.raw,
+                   fields=excluded.fields, source_url=excluded.source_url, last_checked_at=excluded.last_checked_at""",
+            (lead_id, b["source"], b["source_id"], b["industry"], area, raw, ts, ts, b.get("source_url"),
+             json.dumps(fields), conf, why, json.dumps(b.get("metadata") or {}), ts),
         )
+        website = fields.get("website")
+        if website:
+            # Every website a source states is kept as a candidate, even if another one wins.
+            c.execute("""INSERT OR IGNORE INTO website_candidates (lead_id, url, norm_domain, source, source_record_id, identity,
+                         match_evidence, check_status, first_seen_at) VALUES (?, ?, ?, ?, ?, 'high', ?, 'unchecked', ?)""",
+                      (lead_id, website, keys({"website": website})["norm_domain"], b["source"], b["source_id"],
+                       json.dumps([f"listed on the {b['source']} record for this business"]), ts))
         c.commit()
     return outcome
 
@@ -158,11 +181,19 @@ def set_website(lead_id: int, url: str) -> None:
         c.execute("UPDATE leads SET website=?, norm_domain=?, final_url=NULL, analyzed_at=NULL WHERE id=?",
                   (url, keys({"website": url})["norm_domain"], lead_id))
         c.execute(
-            """INSERT INTO lead_sources (lead_id, source, source_id, industry, area, raw, first_seen_at, last_seen_at)
-               VALUES (?, 'manual', ?, ?, NULL, ?, ?, ?)
-               ON CONFLICT (source, source_id) DO UPDATE SET raw=excluded.raw, last_seen_at=excluded.last_seen_at""",
-            (lead_id, f"website/{lead_id}", industry, json.dumps({"website": url, "corrected_at": ts}), ts, ts),
+            """INSERT INTO lead_sources (lead_id, source, source_id, industry, area, raw, first_seen_at, last_seen_at,
+                                         fields, match_confidence, match_explanation, last_checked_at)
+               VALUES (?, 'manual', ?, ?, NULL, ?, ?, ?, ?, 'high', 'entered by a person reviewing the lead', ?)
+               ON CONFLICT (source, source_id) DO UPDATE SET raw=excluded.raw, last_seen_at=excluded.last_seen_at,
+                   fields=excluded.fields, last_checked_at=excluded.last_checked_at""",
+            (lead_id, f"website/{lead_id}", industry, json.dumps({"website": url, "corrected_at": ts}), ts, ts,
+             json.dumps({"website": url}), ts),
         )
+        c.execute("UPDATE website_candidates SET selected=0 WHERE lead_id=?", (lead_id,))
+        c.execute("""INSERT INTO website_candidates (lead_id, url, norm_domain, source, identity, match_evidence, check_status,
+                     first_seen_at, selected) VALUES (?, ?, ?, 'manual', 'high', ?, 'unchecked', ?, 1)
+                     ON CONFLICT (lead_id, url, source) DO UPDATE SET selected=1""",
+                  (lead_id, url, keys({"website": url})["norm_domain"], json.dumps(["entered by a person reviewing the lead"]), ts))
         c.commit()
 
 
@@ -175,6 +206,65 @@ def save_analysis(lead_id: int, result: dict) -> None:
         (now(), result["website_status"], result.get("final_url"), result.get("website"), result.get("email"),
          json.dumps(result["findings"]), AUDIT_VERSION, lead_id),
     )
+
+
+# ---------------------------------------------------------------- provenance & websites
+
+
+def lead_sources(lead_id: int) -> list[dict]:
+    rows = conn().execute("""SELECT source, source_id, source_url, industry, area, fields, match_confidence, match_explanation,
+                                    metadata, first_seen_at, last_seen_at, last_checked_at
+                             FROM lead_sources WHERE lead_id=? ORDER BY id""", (lead_id,)).fetchall()
+    return [_row(r) for r in rows]
+
+
+def website_candidates(lead_id: int) -> list[dict]:
+    return [_row(r) for r in conn().execute(
+        "SELECT * FROM website_candidates WHERE lead_id=? ORDER BY selected DESC, id", (lead_id,)).fetchall()]
+
+
+def save_candidate(lead_id: int, cand: dict) -> None:
+    """Insert or refresh one website candidate (keyed by lead, url, source)."""
+    ts = now()
+    _write(
+        """INSERT INTO website_candidates (lead_id, url, norm_domain, source, source_record_id, identity, match_evidence,
+                                           check_status, http_status, final_url, detail, first_seen_at, checked_at)
+           VALUES (:lead_id, :url, :norm_domain, :source, :source_record_id, :identity, :match_evidence, :check_status,
+                   :http_status, :final_url, :detail, :ts, :checked_at)
+           ON CONFLICT (lead_id, url, source) DO UPDATE SET identity=excluded.identity, match_evidence=excluded.match_evidence,
+               check_status=excluded.check_status, http_status=excluded.http_status, final_url=excluded.final_url,
+               detail=excluded.detail, checked_at=excluded.checked_at,
+               source_record_id=COALESCE(excluded.source_record_id, website_candidates.source_record_id)""",
+        {"lead_id": lead_id, "url": cand["url"], "norm_domain": keys({"website": cand["url"]})["norm_domain"],
+         "source": cand["source"], "source_record_id": cand.get("source_record_id"), "identity": cand.get("identity"),
+         "match_evidence": json.dumps(cand.get("match_evidence") or []), "check_status": cand.get("check_status", "unchecked"),
+         "http_status": cand.get("http_status"), "final_url": cand.get("final_url"), "detail": cand.get("detail"),
+         "ts": ts, "checked_at": cand.get("checked_at")},
+    )
+
+
+def save_website_state(lead_id: int, state: str, canonical: str | None, conflict: bool) -> None:
+    """Persist the verification result. A canonical URL is only written when one was
+    found; an existing website is never erased because a later check failed."""
+    with _lock:
+        c = conn()
+        c.execute("UPDATE leads SET website_state=?, website_conflict=?, website_checked_at=? WHERE id=?",
+                  (state, int(conflict), now(), lead_id))
+        if canonical:
+            c.execute("UPDATE leads SET website=?, norm_domain=? WHERE id=?",
+                      (canonical, keys({"website": canonical})["norm_domain"], lead_id))
+            c.execute("UPDATE website_candidates SET selected=(url=?) WHERE lead_id=?", (canonical, lead_id))
+        c.commit()
+
+
+def api_calls(source: str, period: str) -> int:
+    r = conn().execute("SELECT calls FROM api_usage WHERE source=? AND period=?", (source, period)).fetchone()
+    return r[0] if r else 0
+
+
+def count_api_call(source: str, period: str) -> None:
+    _write("""INSERT INTO api_usage (source, period, calls) VALUES (?, ?, 1)
+              ON CONFLICT (source, period) DO UPDATE SET calls=calls+1""", (source, period))
 
 
 def get_business(lead_id: int) -> dict | None:

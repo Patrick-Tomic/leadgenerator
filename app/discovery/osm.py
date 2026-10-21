@@ -12,6 +12,7 @@ areas are split into smaller named areas (config.AREAS) instead.
 """
 import asyncio
 import logging
+import re
 import time
 
 import httpx
@@ -36,20 +37,59 @@ def build_query(selectors: list[str], bbox: tuple, since: str | None = None) -> 
     return f"[out:json][timeout:90];({parts});out center tags;"
 
 
-def _address(tags: dict) -> tuple[str | None, str | None]:
-    if tags.get("addr:full"):
-        return tags["addr:full"], tags.get("addr:city")
-    street = " ".join(x for x in (tags.get("addr:housenumber"), tags.get("addr:street")) if x)
-    city = tags.get("addr:city")
-    parts = [p for p in (street, city, tags.get("addr:state"), tags.get("addr:postcode")) if p]
-    return (", ".join(parts) or None), city
+_CITY_IN_ADDRESS = re.compile(r",\s*([A-Za-z .'-]+?),\s*(?:FL|Florida)\b(?:\s+(\d{5}))?", re.I)
+WEBSITE_KEYS = ("website", "contact:website", "url", "contact:url")
+PHONE_KEYS = ("phone", "contact:phone", "mobile", "contact:mobile")
+ALT_NAME_KEYS = ("alt_name", "short_name", "official_name", "loc_name", "old_name", "brand")
+SOCIAL_KEYS = {"facebook": ("contact:facebook", "facebook"), "instagram": ("contact:instagram", "instagram"),
+               "twitter": ("contact:twitter", "twitter"), "yelp": ("contact:yelp",)}
 
 
-def _website(tags: dict) -> str | None:
-    for key in ("website", "contact:website", "url"):
+def _first(tags: dict, keys: tuple) -> str | None:
+    for key in keys:
         if tags.get(key):
             return tags[key].split(";")[0].strip()
     return None
+
+
+def _address(tags: dict) -> tuple[str | None, str | None, str | None]:
+    """(address, city, postcode). Some mappers put the whole address in addr:full or
+    addr:street ("56th Ct N #604, Clearwater, FL 33760"), so city/ZIP are parsed from it."""
+    city, postcode = tags.get("addr:city"), tags.get("addr:postcode")
+    if tags.get("addr:full"):
+        address = tags["addr:full"]
+    else:
+        street = " ".join(x for x in (tags.get("addr:housenumber"), tags.get("addr:street")) if x)
+        address = ", ".join(p for p in (street, city, tags.get("addr:state"), postcode) if p) or None
+    if address and not city:
+        m = _CITY_IN_ADDRESS.search(address)
+        if m:
+            city, postcode = m.group(1).strip(), postcode or m.group(2)
+    return address, city, postcode
+
+
+def _website(tags: dict) -> str | None:
+    return _first(tags, WEBSITE_KEYS)
+
+
+def contributed_fields(tags: dict) -> dict:
+    """Every business field this OSM record provides (for provenance and lead details)."""
+    address, city, postcode = _address(tags)
+    phones = sorted({p.strip() for k in PHONE_KEYS for p in (tags.get(k) or "").split(";") if p.strip()})
+    out = {
+        "name": tags.get("name"),
+        "alt_names": [tags[k] for k in ALT_NAME_KEYS if tags.get(k)],
+        "address": address, "city": city, "postcode": postcode,
+        "phone": phones[0] if phones else None, "phones": phones,
+        "email": _first(tags, ("email", "contact:email")),
+        "website": _website(tags),
+        "social": {name: _first(tags, keys) for name, keys in SOCIAL_KEYS.items() if _first(tags, keys)},
+        "opening_hours": tags.get("opening_hours"),
+        "description": tags.get("description") or tags.get("description:en"),
+        "operator": tags.get("operator"),
+        "start_date": tags.get("start_date"),
+    }
+    return {k: v for k, v in out.items() if v}
 
 
 def element_to_business(el: dict, industry_key: str) -> dict | None:
@@ -61,20 +101,23 @@ def element_to_business(el: dict, industry_key: str) -> dict | None:
         return None
     lat = el.get("lat") or el.get("center", {}).get("lat")
     lon = el.get("lon") or el.get("center", {}).get("lon")
-    address, city = _address(tags)
+    fields = contributed_fields(tags)
+    osm_url = f"https://www.openstreetmap.org/{el['type']}/{el['id']}"
     return {
         "source": "osm",
         "source_id": f"{el['type']}/{el['id']}",
+        "source_url": osm_url,
         "name": name,
         "industry": industry_key,
-        "address": address,
-        "city": city,
+        "address": fields.get("address"),
+        "city": fields.get("city"),
         "lat": lat,
         "lon": lon,
-        "phone": (tags.get("phone") or tags.get("contact:phone") or "").split(";")[0].strip() or None,
-        "email": tags.get("email") or tags.get("contact:email"),
-        "website": _website(tags),
-        "raw": {"osm_url": f"https://www.openstreetmap.org/{el['type']}/{el['id']}", "tags": tags},
+        "phone": fields.get("phone"),
+        "email": fields.get("email"),
+        "website": fields.get("website"),
+        "fields": fields,
+        "raw": {"osm_url": osm_url, "tags": tags},
     }
 
 

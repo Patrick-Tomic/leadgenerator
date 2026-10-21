@@ -4,10 +4,11 @@ already in the DB, so re-running it after a profile change costs no network requ
 import logging
 
 from . import db, profiles
+from .dedup import normalize_phone
 from .scoring import exclusion_reason, score_lead, summarize
 
 # Bump when the scoring logic changes so stored scores are recomputed at startup.
-SCORING_VERSION = 2
+SCORING_VERSION = 3
 
 log = logging.getLogger(__name__)
 
@@ -24,12 +25,22 @@ def listed_email(business: dict) -> str | None:
     return tags.get("email") or tags.get("contact:email")
 
 
+def phone_sources(lead_id: int, phone: str | None) -> int:
+    """How many independent sources list the business's phone number."""
+    target = normalize_phone(phone)
+    if not target:
+        return 0
+    return len({s["source"] for s in db.lead_sources(lead_id) if s["source"] != "manual"
+                and target in {normalize_phone(p) for p in (s.get("fields") or {}).get("phones", [])
+                               + [(s.get("fields") or {}).get("phone")] if p}})
+
+
 def qualify(business: dict, profile: dict, industries: set[str], areas: set[str]) -> dict | None:
     """Score one business for one customer, or None if it's out of the customer's scope."""
     if exclusion_reason(business, profile, areas, industries):
         return None
     findings = business.get("findings") or []
-    facts = facts_of(findings)
+    facts = {**facts_of(findings), "phone_sources": phone_sources(business["id"], business.get("phone")) if business.get("id") else 0}
     scored = score_lead({**business, "email": listed_email(business)}, findings, profile, facts)
     return {**scored, "summary": summarize(business, business.get("website_status"), scored["opportunities"],
                                            facts, profile, scored["explanation"])}

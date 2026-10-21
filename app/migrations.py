@@ -179,7 +179,123 @@ def m002_evidence_scoring(c: sqlite3.Connection) -> None:
     """)
 
 
-MIGRATIONS = [m001_customers_and_discovery, m002_evidence_scoring]
+def m003_provenance_websites_registrations(c: sqlite3.Connection) -> None:
+    """Field-level source provenance, website candidates with verification state, and
+    Florida business registrations kept apart from operating businesses. Additive only;
+    backfills fill empty values and never overwrite existing ones."""
+    _run(c, """
+        ALTER TABLE lead_sources ADD COLUMN source_url TEXT;
+        ALTER TABLE lead_sources ADD COLUMN fields JSON;
+        ALTER TABLE lead_sources ADD COLUMN match_confidence TEXT;
+        ALTER TABLE lead_sources ADD COLUMN match_explanation TEXT;
+        ALTER TABLE lead_sources ADD COLUMN metadata JSON;
+        ALTER TABLE lead_sources ADD COLUMN last_checked_at TEXT;
+
+        ALTER TABLE leads ADD COLUMN website_state TEXT;
+        ALTER TABLE leads ADD COLUMN website_conflict INTEGER NOT NULL DEFAULT 0;
+        ALTER TABLE leads ADD COLUMN website_checked_at TEXT;
+
+        CREATE TABLE website_candidates (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            lead_id INTEGER NOT NULL REFERENCES leads(id),
+            url TEXT NOT NULL,
+            norm_domain TEXT,
+            source TEXT NOT NULL,            -- osm | manual | search:brave | google_places | ...
+            source_record_id TEXT,
+            identity TEXT,                   -- high | medium | low: is this site really this business?
+            match_evidence JSON,             -- reasons for the identity level
+            check_status TEXT,               -- ok | blocked | robots | unreachable | dns | parked | social | directory | unchecked
+            http_status INTEGER,
+            final_url TEXT,
+            detail TEXT,
+            first_seen_at TEXT NOT NULL,
+            checked_at TEXT,
+            selected INTEGER NOT NULL DEFAULT 0,
+            UNIQUE (lead_id, url, source)
+        );
+        CREATE INDEX idx_candidates_lead ON website_candidates (lead_id);
+
+        CREATE TABLE registrations (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            source TEXT NOT NULL,            -- sunbiz_cor | sunbiz_fic
+            doc_number TEXT NOT NULL,
+            name TEXT NOT NULL,
+            norm_name TEXT,
+            entity_type TEXT,
+            status TEXT,
+            filing_date TEXT,
+            filing_date_raw TEXT,
+            principal_address TEXT,          -- as filed, NOT a confirmed operating location
+            principal_city TEXT,
+            principal_state TEXT,
+            principal_zip TEXT,
+            county TEXT,
+            area TEXT,
+            industry TEXT,
+            source_url TEXT,
+            source_file TEXT,
+            first_seen_at TEXT NOT NULL,
+            last_seen_at TEXT NOT NULL,
+            match_lead_id INTEGER REFERENCES leads(id),
+            match_confidence TEXT,
+            match_evidence JSON,
+            flags JSON,
+            promoted_lead_id INTEGER REFERENCES leads(id),
+            UNIQUE (source, doc_number)
+        );
+        CREATE INDEX idx_registrations_filed ON registrations (filing_date);
+        CREATE INDEX idx_registrations_norm ON registrations (norm_name);
+
+        CREATE TABLE registration_imports (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            source TEXT NOT NULL,
+            file_name TEXT NOT NULL,
+            file_date TEXT,
+            started_at TEXT NOT NULL,
+            finished_at TEXT,
+            status TEXT NOT NULL,            -- running | ok | error
+            records INTEGER, imported INTEGER, updated INTEGER, skipped INTEGER, rejected INTEGER,
+            errors JSON,
+            UNIQUE (source, file_name)
+        );
+
+        CREATE TABLE api_usage (
+            source TEXT NOT NULL,
+            period TEXT NOT NULL,            -- YYYY-MM
+            calls INTEGER NOT NULL DEFAULT 0,
+            PRIMARY KEY (source, period)
+        )
+    """)
+    from .discovery.osm import contributed_fields
+    for lid, source, source_id, raw, created in c.execute(
+            "SELECT lead_id, source, source_id, raw, first_seen_at FROM lead_sources").fetchall():
+        data = json.loads(raw or "{}")
+        if source == "osm":
+            tags = data.get("tags", {})
+            fields, url = contributed_fields(tags), data.get("osm_url")
+        else:
+            fields, url = {k: v for k, v in data.items() if k in ("website",)}, None
+        c.execute("""UPDATE lead_sources SET source_url=?, fields=?, last_checked_at=?,
+                     match_confidence=COALESCE(match_confidence, 'high'),
+                     match_explanation=COALESCE(match_explanation, ?) WHERE source=? AND source_id=?""",
+                  (url, json.dumps(fields), created, "original record (before v0.4 provenance tracking)", source, source_id))
+        # Repair values the v0.3 OSM mapping dropped (fill empty columns only).
+        if source == "osm":
+            c.execute("UPDATE leads SET city=COALESCE(city, ?), phone=COALESCE(phone, ?) WHERE id=?",
+                      (fields.get("city"), fields.get("phone"), lid))
+    # Existing websites become candidates; their state is re-derived by the next audit.
+    for lid, website, ws in c.execute("SELECT id, website, website_status FROM leads").fetchall():
+        if website:
+            src = c.execute("SELECT source FROM lead_sources WHERE lead_id=? AND source='manual'", (lid,)).fetchone()
+            c.execute("""INSERT OR IGNORE INTO website_candidates (lead_id, url, norm_domain, source, identity, match_evidence,
+                         check_status, first_seen_at, selected) VALUES (?, ?, ?, ?, 'high', ?, 'unchecked', ?, 1)""",
+                      (lid, website, keys({"website": website})["norm_domain"], src[0] if src else "osm",
+                       json.dumps(["listed on the business's own source record"]), _now()))
+        state = {"unverified": "unknown", "none": "none_found"}.get(ws, "found_unverified" if website else "unknown")
+        c.execute("UPDATE leads SET website_state=? WHERE id=?", (state, lid))
+
+
+MIGRATIONS = [m001_customers_and_discovery, m002_evidence_scoring, m003_provenance_websites_registrations]
 LATEST = len(MIGRATIONS)
 
 

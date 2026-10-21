@@ -74,11 +74,11 @@ function renderLead(lead) {
 
   const site = lead.final_url || lead.website;
   const mapUrl = lead.lat ? `https://www.openstreetmap.org/?mlat=${lead.lat}&mlon=${lead.lon}#map=18/${lead.lat}/${lead.lon}` : null;
-  const googleUrl = `https://www.google.com/search?q=${encodeURIComponent(`${lead.name} ${lead.city || "Tampa"} FL`)}`;
+  const googleUrl = `https://www.google.com/search?q=${encodeURIComponent(`${lead.name} ${lead.city || ""} FL`.replace(/\s+/g, " "))}`;
   $(".contact ul", node).innerHTML = [
     lead.phone && `<li><span class="label">Phone</span><a href="tel:${esc(lead.phone)}">${esc(lead.phone)}</a></li>`,
     lead.email && `<li><span class="label">Email</span><a href="mailto:${esc(lead.email)}">${esc(lead.email)}</a></li>`,
-    `<li><span class="label">Website <button class="link-btn" data-act="website">${site ? "Edit" : "Add"}</button></span>${site ? `<a href="${esc(/^https?:/.test(site) ? site : "http://" + site)}" target="_blank" rel="noopener">${esc(site)}</a>` : `<span class="muted">None found</span>`}</li>`,
+    `<li><span class="label">Website <button class="link-btn" data-act="website">${site ? "Edit" : "Add"}</button></span>${site ? `<a href="${esc(/^https?:/.test(site) ? site : "http://" + site)}" target="_blank" rel="noopener">${esc(site)}</a><br>` : ""}<span class="chip ws-${esc(lead.website_state || "unknown")}">${esc(lead.website_state_label || "Website status unknown")}</span></li>`,
     lead.address && `<li><span class="label">Address</span>${mapUrl ? `<a href="${mapUrl}" target="_blank" rel="noopener">${esc(lead.address)}</a>` : esc(lead.address)}</li>`,
     `<li><span class="label">Verify</span><a href="${googleUrl}" target="_blank" rel="noopener">Search Google</a>${lead.source_url ? ` · <a href="${esc(lead.source_url)}" target="_blank" rel="noopener">OSM listing</a>` : ""}</li>`,
   ].filter(Boolean).join("");
@@ -116,6 +116,7 @@ function renderLead(lead) {
     (main.length ? group(main) : `<p class="muted">No other problems observed.</p>`) +
     (unchecked.length ? `<details open><summary>Couldn't check / not tested (${unchecked.length})</summary>${group(unchecked)}</details>` : "") +
     (optional.length ? `<details><summary>Optional features, low priority (${optional.length})</summary><p class="muted">Absent nice-to-haves. Not evidence of a problem on their own.</p>${group(optional)}</details>` : "");
+  renderDetails(node, lead);
   $(".notes", node).value = lead.notes || "";
 
   if (lead.ai_brief) { $(".brief", node).hidden = false; $(".brief-body", node).innerHTML = md(lead.ai_brief); }
@@ -128,6 +129,49 @@ function renderLead(lead) {
   $("#lead .actions").addEventListener("click", onAction);
   $("#lead .contact").addEventListener("click", onAction);
   window.scrollTo(0, 0);
+}
+
+const SRC_CHIP = (s) => `<span class="chip src">${esc(s)}</span>`;
+
+function renderDetails(node, lead) {
+  const d = lead.details;
+  if (!d) { $(".sources-panel", node).hidden = true; return; }
+  const ws = d.website;
+  $(".ws-block", node).innerHTML = `
+    <div><strong>Website:</strong> <span class="chip ws-${esc(ws.state)}">${esc(ws.label)}</span>
+      ${ws.conflict ? `<span class="chip conf-unverified">sources disagree</span>` : ""}</div>
+    ${ws.candidates.length ? `<ul class="cand-list">${ws.candidates.map((c) => `
+      <li${c.selected ? ' class="selected"' : ""}>${link(c.url)} ${SRC_CHIP(c.source)}
+        <span class="chip">identity: ${esc(c.identity || "?")}</span><span class="chip">${esc(c.check_status || "unchecked")}</span>
+        ${c.selected ? '<span class="chip conf-verified">in use</span>' : ""}
+        <div class="muted">${esc(c.detail || "")}${c.final_url && c.final_url !== c.url ? ` → ${esc(c.final_url)}` : ""}
+        ${c.evidence.length ? ` · ${esc(c.evidence.join("; "))}` : ""}</div></li>`).join("")}</ul>`
+      : `<p class="muted">No website candidates from any source.</p>`}`;
+  $(".detail-table tbody", node).innerHTML = d.fields.map((f) => `
+    <tr${f.conflict ? ' class="conflict"' : ""}><th>${esc(f.label)}${f.conflict ? ' <span class="chip conf-unverified">conflict</span>' : ""}</th>
+      <td>${f.values.map((v) => `<div>${esc(v.value)} ${v.sources.map(SRC_CHIP).join("")}</div>`).join("")}</td></tr>`).join("");
+  $(".source-list", node).innerHTML = d.sources.map((s) => `
+    <li>${SRC_CHIP(s.label)} ${s.url ? link(s.url, s.record_id) : esc(s.record_id)}
+      <div class="muted">match: ${esc(s.match_confidence || "?")}, ${esc(s.match_explanation || "")} · fields: ${esc(s.fields.join(", ") || "none")}
+      · last checked ${esc((s.last_checked_at || "").slice(0, 10))}${s.note ? ` · ${esc(s.note)}` : ""}</div></li>`).join("");
+  const tags = lead.source_tags || {};
+  if (Object.keys(tags).length) $(".raw-tags pre", node).textContent = Object.entries(tags).map(([k, v]) => `${k} = ${v}`).join("\n");
+  else $(".raw-tags", node).hidden = true;
+}
+
+async function loadRegistrations() {
+  const data = await api(`/api/registrations${$("#reg-all").checked ? "?all=true" : ""}`);
+  $("#reg-help").textContent = `Download Sunbiz daily files (doc/cor/yyyymmddc.txt, doc/fic/yyyymmddf.txt) from the official public SFTP into ${data.import_dir}, then import. Registrations are legal entities, not confirmed operating businesses; addresses are as filed.`;
+  $("#reg-imports").innerHTML = data.imports.length ? `<p class="muted">Recent imports: ${data.imports.map((i) =>
+    `${esc(i.file_name)} (${esc(i.status)}: ${i.imported ?? 0} new, ${i.updated ?? 0} updated, ${i.skipped ?? 0} skipped, ${i.rejected ?? 0} rejected)`).join("; ")}</p>` : "";
+  $("#reg-table tbody").innerHTML = data.registrations.map((r) => `
+    <tr><td>${esc(r.filing_date || "")}</td><td>${esc(r.name)}<br><small class="muted">${esc(r.doc_number)}</small></td>
+      <td>${esc(r.entity_type || "")}</td><td>${esc(r.principal_city || "")}</td><td>${esc(r.industry || "—")}</td>
+      <td>${(r.flags || []).map((f) => `<span class="chip">${esc(f.replace(/_/g, " "))}</span>`).join("")}</td>
+      <td>${r.match_lead_id ? `#${r.match_lead_id} <span class="chip">${esc(r.match_confidence)}</span>` : "—"}</td>
+      <td>${r.promoted_lead_id ? `<button class="link-btn" data-open="${r.promoted_lead_id}">Open lead</button>`
+        : `<button class="link-btn" data-promote="${r.id}">Promote to lead</button>`}</td></tr>`).join("")
+    || `<tr><td colspan="8">No registrations imported${$("#reg-all").checked ? "" : " for this customer's areas and industries"} yet.</td></tr>`;
 }
 
 async function onAction(e) {
@@ -193,8 +237,42 @@ function show(view) {
   document.querySelectorAll(".tab").forEach((t) => t.classList.toggle("active", t.dataset.view === view));
   $("#view-next").hidden = view !== "next";
   $("#view-pipeline").hidden = view !== "pipeline";
+  $("#view-registrations").hidden = view !== "registrations";
   if (view === "pipeline") loadPipeline();
+  if (view === "registrations") loadRegistrations().catch((e) => alert(e.message));
 }
+
+$("#reg-all").addEventListener("change", () => loadRegistrations());
+$("#reg-import").addEventListener("click", async (e) => {
+  e.target.disabled = true;
+  try {
+    const { results } = await api("/api/registrations/import", { method: "POST" });
+    alert(results.length ? results.map((r) => `${r.file}: ${r.status}${r.reason ? ` (${r.reason})` : ""}`).join("\n") : "No data files found.");
+    loadRegistrations();
+  } catch (err) { alert(err.message); } finally { e.target.disabled = false; }
+});
+$("#reg-table tbody").addEventListener("click", async (e) => {
+  const open = e.target.closest("[data-open]"), prom = e.target.closest("[data-promote]");
+  if (!open && !prom) return;
+  try {
+    let lead;
+    if (open) lead = await api(`/api/leads/${open.dataset.open}`);
+    else {
+      prom.disabled = true; prom.textContent = "Checking…";
+      let res = await fetch(`/api/registrations/${prom.dataset.promote}/promote${customer ? `?customer=${encodeURIComponent(customer)}` : ""}`,
+        { method: "POST", headers: { "Content-Type": "application/json" }, body: "{}" });
+      if (res.status === 400) {
+        const industry = prompt(`Category for this business? One of: ${Object.keys(status.industries).join(", ")}`);
+        if (!industry) { loadRegistrations(); return; }
+        res = await fetch(`/api/registrations/${prom.dataset.promote}/promote${customer ? `?customer=${encodeURIComponent(customer)}` : ""}`,
+          { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ industry }) });
+      }
+      lead = await res.json();
+      if (!res.ok) throw new Error(lead.detail || `HTTP ${res.status}`);
+    }
+    show("next"); renderLead(lead);
+  } catch (err) { alert(err.message); loadRegistrations(); }
+});
 
 document.querySelectorAll(".tab").forEach((t) => t.addEventListener("click", () => {
   show(t.dataset.view);
@@ -215,4 +293,6 @@ $("#table tbody").addEventListener("click", async (e) => {
   renderLead(await api(`/api/leads/${row.dataset.id}`));
 });
 setInterval(() => refreshStatus().catch(() => {}), 10000);
-loadCustomers().then(refreshStatus).then(loadNext);
+// #lead=<id> opens a specific lead (shareable link); otherwise show the next best lead.
+const deepLink = location.hash.match(/lead=(\d+)/);
+loadCustomers().then(refreshStatus).then(() => deepLink ? api(`/api/leads/${deepLink[1]}`).then(renderLead).catch(loadNext) : loadNext());

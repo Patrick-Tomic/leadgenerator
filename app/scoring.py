@@ -27,8 +27,14 @@ from .profiles import default_profile
 #   potential   - an optional feature that's absent, or an observation below verified
 #   unavailable - we couldn't check (bot protection, robots.txt, unreadable page)
 #   info        - neutral context, not an issue (e.g. a form we found but didn't test)
-UNAVAILABLE_CODES = {"access_restricted", "robots_blocked", "unreadable_page", "analysis_error"}
-INFO_CODES = {"website_found_by_search", "form_untested"}
+UNAVAILABLE_CODES = {"access_restricted", "robots_blocked", "unreadable_page", "analysis_error",
+                     "website_unknown", "website_match_uncertain", "no_website_unverified"}
+INFO_CODES = {"website_found_by_search", "form_untested", "website_conflict", "website_identity_unconfirmed"}
+# Findings about "is there a website at all"; everything else is about the audited site,
+# and counts less if we couldn't confirm that site belongs to the business.
+WEBSITE_EXISTENCE_CODES = {"no_website_confirmed", "no_website_unverified", "social_only", "parked_or_placeholder",
+                           "new_registration"}
+DEFAULT_SITE_IDENTITY_MULT = {"verified": 1.0, "found_unverified": 0.6, "unreachable": 0.8}
 
 
 def classify_finding(f: dict) -> str:
@@ -55,9 +61,10 @@ def finding_value(f: dict, scoring: dict) -> float:
 
 
 def contact_status(business: dict, facts: dict) -> str:
-    """verified: the listing's phone also appears on the business's own website.
+    """verified: the listing's phone also appears on the business's own website, or two
+    independent sources list the same phone.
     listed: phone or email from the business listing. site_only: only the website shows contact details."""
-    if facts.get("contact_corroborated"):
+    if facts.get("contact_corroborated") or facts.get("phone_sources", 0) >= 2:
         return "verified"
     if business.get("phone") or business.get("email"):
         return "listed"
@@ -89,6 +96,9 @@ def score_lead(business: dict, findings: list[dict], profile: dict | None = None
     for f in findings:
         key = offering_of.get(f["code"])
         v = finding_value(f, scoring) if key else 0.0
+        if v and f["code"] not in WEBSITE_EXISTENCE_CODES and facts.get("website_state"):
+            # Problems on a site we couldn't confirm is theirs are weaker evidence.
+            v *= scoring.get("site_identity_mult", DEFAULT_SITE_IDENTITY_MULT).get(facts["website_state"], 1.0)
         if v > 0:
             scored.append({"f": f, "offering": key, "value": v, "tier": entry(f["code"])["tier"]})
     main = sorted((x for x in scored if x["tier"] != "optional"), key=lambda x: -x["value"])

@@ -23,10 +23,16 @@ class DiscoveryAdapter(ABC):
 
 
 class WebsiteFinder(ABC):
-    """Looks up the official website of a business that was discovered without one."""
+    """Proposes website candidates for a business. A finder never decides that a site
+    belongs to the business; app/websites.py checks each candidate page for that."""
 
     name: str
+    # False: only consulted when the business's own records list no usable website.
+    always: bool = False
 
     @abstractmethod
-    async def find_website(self, business: dict) -> dict:
-        """Return {"website": url | None, "checked": [result urls], "query": str}."""
+    async def find_candidates(self, profile: dict) -> dict:
+        """profile: names, phones (10-digit), cities, addresses (see websites.business_profile).
+        Return {"candidates": [{"url", "source", "source_record_id"?, "evidence": [...],
+        "base_identity"?: "high"|"medium"|"low"}], "queries": [...], "checked": [result urls],
+        "directories": [directory domains seen]}. Raise SourceError on failure."""

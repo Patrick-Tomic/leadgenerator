@@ -14,7 +14,7 @@ from fastapi.responses import FileResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
-from . import ai, config, db, pipeline
+from . import ai, config, db, details, pipeline, registrations
 from urllib.parse import urlparse
 
 from .analysis.fetcher import PoliteFetcher
@@ -22,6 +22,7 @@ from .analysis.website import normalize_url
 from .qualify import qualify_business, sync_profiles
 from .findings import TIER_ORDER, enrich
 from .scoring import classify_finding
+from .websites import STATE_LABEL
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
 STATIC = config.BASE_DIR / "static"
@@ -50,7 +51,7 @@ def _customer(slug: str | None) -> dict:
     return cust
 
 
-def _public(lead: dict | None) -> dict | None:
+def _public(lead: dict | None, detailed: bool = True) -> dict | None:
     if not lead:
         return None
     lead = dict(lead)
@@ -61,6 +62,11 @@ def _public(lead: dict | None) -> dict | None:
     lead["industry_label"] = config.INDUSTRIES.get(lead["industry"], {}).get("label", lead["industry"])
     raw = lead.pop("raw", None) or {}
     lead["source_url"] = raw.get("osm_url")
+    lead["website_state_label"] = STATE_LABEL.get(lead.get("website_state") or "unknown")
+    if detailed:
+        # Every field from every source (with attribution), website candidates and conflicts.
+        lead["details"] = details.build(lead, lead["facts"])
+        lead["source_tags"] = raw.get("tags") or {}
     return lead
 
 
@@ -117,7 +123,7 @@ def next_lead(customer: str | None = None, exclude: str = ""):
 
 @app.get("/api/leads")
 def leads(customer: str | None = None, status: str | None = Query(None)):
-    return [_public(l) for l in db.list_leads(_customer(customer)["id"], status)]
+    return [_public(l, detailed=False) for l in db.list_leads(_customer(customer)["id"], status)]
 
 
 @app.get("/api/leads/{lead_id}")
@@ -196,6 +202,52 @@ def discover(customer: str | None = None):
     return {"started": started, "pipeline": pipeline.state}
 
 
+@app.get("/api/registrations")
+def list_registrations(customer: str | None = None, all: bool = False, limit: int = 200):
+    """State registrations, newest first; by default only the customer's areas and industries."""
+    cust = _customer(customer)
+    rows = registrations.list_registrations(None if all else cust["profile"], limit)
+    return {"registrations": rows, "imports": registrations.recent_imports(10),
+            "import_dir": str(config.SUNBIZ_IMPORT_DIR)}
+
+
+@app.post("/api/registrations/import")
+def import_registrations(force: bool = False):
+    """Import Sunbiz data files you've placed in SUNBIZ_IMPORT_DIR (already-imported files are skipped)."""
+    if not config.SUNBIZ_IMPORT_DIR.exists():
+        raise HTTPException(404, f"Put Sunbiz data files in {config.SUNBIZ_IMPORT_DIR} first (see README).")
+    return {"results": registrations.import_dir(force=force)}
+
+
+class Promote(BaseModel):
+    industry: str | None = None
+
+
+@app.post("/api/registrations/{reg_id}/promote")
+async def promote_registration(reg_id: int, body: Promote, customer: str | None = None):
+    cust = _customer(customer)
+    try:
+        lead_id = registrations.promote(reg_id, body.industry)
+    except LookupError as e:
+        raise HTTPException(404, str(e))
+    except ValueError as e:
+        raise HTTPException(400, str(e))
+    lead = db.get_lead(cust["id"], lead_id)
+    if lead and lead.get("analyzed_at"):
+        return _public(lead)
+    business = db.get_business(lead_id)
+    fetcher = PoliteFetcher()
+    try:
+        db.save_analysis(lead_id, await pipeline.analyze_business(business, fetcher))
+    finally:
+        await fetcher.aclose()
+    qualify_business(lead_id)
+    lead = db.get_lead(cust["id"], lead_id)
+    if not lead:
+        raise HTTPException(409, "Promoted, but it's outside this customer's areas or industries.")
+    return _public(lead)
+
+
 @app.get("/api/export.csv")
 def export(customer: str | None = None, status: str | None = None):
     cust = _customer(customer)
@@ -205,7 +257,7 @@ def export(customer: str | None = None, status: str | None = None):
     w.writerow(["score", "grade", "status", "name", "industry", "phone", "email", "website", "address",
                 "top_opportunities", "opportunity_basis", "summary", "notes",
                 "strongest_issue", "evidence", "confidence", "affected_page", "why_it_may_matter", "suggested_service",
-                "talking_point", "main_uncertainty", "verify_manually"])
+                "talking_point", "main_uncertainty", "verify_manually", "website_state", "website_conflict"])
     for l in db.list_leads(cust["id"], status, limit=10000):
         opps = l.get("opportunities") or []
         ex = l.get("explanation") or {}
@@ -214,7 +266,8 @@ def export(customer: str | None = None, status: str | None = None):
                     l.get("final_url") or l["website"], l["address"],
                     "; ".join(o["label"] for o in opps), "; ".join(o.get("basis", "") for o in opps), l["summary"], l["notes"],
                     st.get("title"), st.get("evidence"), st.get("confidence_level"), st.get("page"), st.get("impact"),
-                    st.get("service"), st.get("talking_point"), ex.get("uncertainty"), " | ".join(ex.get("verify") or [])])
+                    st.get("service"), st.get("talking_point"), ex.get("uncertainty"), " | ".join(ex.get("verify") or []),
+                    l.get("website_state") or "unknown", "yes" if l.get("website_conflict") else ""])
     buf.seek(0)
     return StreamingResponse(iter([buf.getvalue()]), media_type="text/csv",
                              headers={"Content-Disposition": f"attachment; filename=leads-{cust['slug']}.csv"})

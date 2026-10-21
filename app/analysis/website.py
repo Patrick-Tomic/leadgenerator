@@ -43,7 +43,7 @@ YEAR_RE = re.compile(r"(?:©|&copy;|copyright)\s*(?:\d{4}\s*[-–]\s*)?((?:19|20
 
 
 # Bump when checks change so older audits get re-run (see db.unanalyzed).
-AUDIT_VERSION = 2
+AUDIT_VERSION = 3
 LINK_CHECK_LIMIT = 8      # internal links checked per site (politeness: ~2 s apart)
 RETRY_DELAY = 5.0         # seconds before re-trying a site that failed to load
 # Calls to action that promise an online way to book or get a quote.

@@ -79,8 +79,19 @@ def keys(b: dict) -> dict:
     }
 
 
+def normalize_street(address: str | None) -> str | None:
+    """House number + first street word, e.g. '6335 Haines Road North' -> '6335 haines'."""
+    if not address:
+        return None
+    m = re.search(r"\b(\d{1,6})\s+(?:[NSEW]\.?\s+)?([A-Za-z0-9]+)", address)
+    return f"{m.group(1)} {m.group(2).lower()}" if m else None
+
+
 def same_place(a: dict, b: dict) -> bool:
-    """Same normalized name and physically close (or same city if no coordinates)."""
+    """Called only for records whose normalized names already match. Requires physical
+    proximity, or (without coordinates) the same street address. A shared name alone,
+    or a shared name plus city, is never enough."""
     if a.get("lat") is not None and b.get("lat") is not None:
         return distance_m(a["lat"], a["lon"], b["lat"], b["lon"]) <= MAX_SAME_NAME_METERS
-    return bool(a.get("city")) and (a.get("city") or "").lower() == (b.get("city") or "").lower()
+    sa, sb = normalize_street(a.get("address")), normalize_street(b.get("address"))
+    return bool(sa) and sa == sb

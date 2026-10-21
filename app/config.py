@@ -33,6 +33,20 @@ MAX_CONSECUTIVE_SCAN_FAILURES = int(os.getenv("MAX_CONSECUTIVE_SCAN_FAILURES", "
 # that OSM lists without one. Without it, "no website" findings stay low-confidence.
 BRAVE_API_KEY = os.getenv("BRAVE_API_KEY", "")
 
+# Optional, paid: Google Places API (New) Text Search, used only to find website
+# candidates for businesses whose own records list none. Off unless a key is set.
+# Website/phone fields bill at the Text Search Enterprise SKU (1,000 free calls/month,
+# then about $35 per 1,000 at the time of writing; check current pricing). The monthly
+# cap below stops calls before the free allowance runs out; raise it deliberately.
+GOOGLE_PLACES_API_KEY = os.getenv("GOOGLE_PLACES_API_KEY", "")
+GOOGLE_PLACES_MONTHLY_LIMIT = int(os.getenv("GOOGLE_PLACES_MONTHLY_LIMIT", "900"))
+
+# Florida Division of Corporations (Sunbiz) daily/quarterly data files, downloaded by
+# you from the official public SFTP and placed here (see README "Sunbiz import").
+SUNBIZ_IMPORT_DIR = Path(os.getenv("SUNBIZ_IMPORT_DIR", BASE_DIR / "data" / "sunbiz"))
+# Only registrations filed within this many days are imported (0 = no limit).
+SUNBIZ_MAX_AGE_DAYS = int(os.getenv("SUNBIZ_MAX_AGE_DAYS", "120"))
+
 # Optional: Claude writes a lead brief + outreach draft on demand.
 ANTHROPIC_MODEL = os.getenv("LEAD_ENGINE_MODEL", "claude-opus-5-5")
 
@@ -63,6 +77,25 @@ AREAS = {
     "sarasota": {"label": "Sarasota County", "bbox": (26.94, -82.65, 27.39, -82.05)},
     "polk": {"label": "Polk County", "bbox": (27.64, -82.11, 28.36, -81.13)},
     "citrus": {"label": "Citrus County", "bbox": (28.69, -82.80, 29.05, -82.17)},
+}
+
+# Cities per area, used to place records that have an address but no coordinates
+# (e.g. state business registrations). Approximate; cities spanning areas are listed once.
+AREA_CITIES = {
+    "hillsborough": ["Tampa", "Brandon", "Riverview", "Plant City", "Temple Terrace", "Valrico", "Seffner", "Lutz",
+                     "Apollo Beach", "Ruskin", "Sun City Center", "Wimauma", "Gibsonton", "Thonotosassa", "Dover",
+                     "Lithia", "Odessa", "Town N Country"],
+    "pinellas": ["Saint Petersburg", "St Petersburg", "Clearwater", "Largo", "Pinellas Park", "Dunedin", "Palm Harbor",
+                 "Tarpon Springs", "Seminole", "Oldsmar", "Safety Harbor", "Gulfport", "Treasure Island",
+                 "St Pete Beach", "Madeira Beach", "Belleair", "Kenneth City", "Indian Rocks Beach"],
+    "pasco": ["New Port Richey", "Port Richey", "Hudson", "Holiday", "Zephyrhills", "Dade City", "Wesley Chapel",
+              "Land O Lakes", "Trinity", "San Antonio"],
+    "manatee": ["Bradenton", "Palmetto", "Ellenton", "Parrish", "Lakewood Ranch", "Holmes Beach", "Anna Maria",
+                "Bradenton Beach", "Myakka City"],
+    "hernando": ["Brooksville", "Spring Hill", "Weeki Wachee", "Ridge Manor"],
+    "sarasota": ["Sarasota", "Venice", "North Port", "Osprey", "Nokomis", "Englewood", "Longboat Key"],
+    "polk": ["Lakeland", "Winter Haven", "Bartow", "Haines City", "Auburndale", "Lake Wales", "Davenport", "Mulberry"],
+    "citrus": ["Inverness", "Crystal River", "Homosassa", "Beverly Hills", "Lecanto"],
 }
 
 # Business categories and how to find them in OpenStreetMap. Each selector is an

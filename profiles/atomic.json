@@ -52,7 +52,8 @@
         "no_website_unverified",
         "social_only",
         "parked_or_placeholder",
-        "site_dns"
+        "site_dns",
+        "new_registration"
       ],
       "pitch": "Build a website the business controls, so searchers have somewhere to land besides directory listings."
     },

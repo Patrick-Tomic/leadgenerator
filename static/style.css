@@ -95,3 +95,19 @@ td.num { font-variant-numeric: tabular-nums; font-weight: 700; }
 .chip.conf-verified { color: var(--good); } .chip.conf-probable { color: var(--med); } .chip.conf-unverified { color: var(--high); }
 .chip.tier-strong { color: var(--high); font-weight: 600; }
 .link-btn { background: none; border: 0; padding: 0 0 0 6px; color: var(--accent); font: inherit; font-size: 12px; font-weight: 600; cursor: pointer; }
+.sources-panel { margin-top: 20px; }
+.sources-panel > summary { cursor: pointer; list-style: none; }
+.sources-panel > summary h3 { display: inline; }
+.sources-panel h4 { font-size: 13px; color: var(--muted); margin: 14px 0 6px; }
+.detail-table { width: 100%; border: 0; margin-top: 10px; }
+.detail-table th { width: 30%; text-transform: none; font-size: 13px; vertical-align: top; }
+.detail-table td, .detail-table th { padding: 6px 8px; border-bottom: 1px solid var(--border); background: transparent; }
+.detail-table tr.conflict { background: color-mix(in srgb, var(--high) 8%, transparent); }
+.chip.src { background: transparent; border: 1px solid var(--border); }
+.cand-list, .source-list { margin: 6px 0; padding-left: 18px; font-size: 14px; }
+.cand-list li, .source-list li { margin: 6px 0; }
+.cand-list li.selected { font-weight: 600; }
+.chip.ws-verified { color: var(--good); } .chip.ws-found_unverified, .chip.ws-possible_match, .chip.ws-unreachable { color: var(--med); }
+.chip.ws-none_found { color: var(--high); } .chip.ws-unknown { font-style: italic; }
+.raw-tags pre { white-space: pre-wrap; font-size: 12px; color: var(--muted); }
+.check { display: inline-flex; gap: 6px; align-items: center; color: var(--muted); font-size: 14px; }

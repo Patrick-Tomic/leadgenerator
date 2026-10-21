@@ -64,7 +64,9 @@ def test_unverified_no_website_ranks_below_verified_problems():
     unverified = score_lead(BIZ, [f("no_website_unverified", "low")])
     assert unverified["score"] < score_lead(BIZ, [f("no_viewport")])["score"]
     assert unverified["score"] < score_lead(BIZ, [f("no_website_confirmed")])["score"]
-    assert "Search Google" in unverified["explanation"]["uncertainty"]
+    # v0.4: a missing listing field is not evidence at all; it's shown and never scored.
+    assert unverified["score"] == 0 and unverified["opportunities"] == []
+    assert any("Search for the business" in v for v in unverified["explanation"]["verify"])
 
 
 def test_dead_domain_is_discounted_for_actionability():

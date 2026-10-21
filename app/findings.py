@@ -78,11 +78,41 @@ CATALOG: dict[str, dict] = {
         "verify": "Search the business name yourself to confirm there's no site.",
         "talk": "I couldn't find a website for your business, only directory listings.",
     },
+    # Pre-v0.4 audits stored this when OSM simply had no website tag. It was never evidence
+    # of anything, so it's now treated exactly like website_unknown: shown, never scored.
     "no_website_unverified": {
-        "tier": "moderate",
-        "impact": "If they really have no website, searchers only find directory listings.",
-        "verify": "Only the map listing lacks a website. Search Google before assuming they don't have one.",
-        "talk": "I couldn't find a website listed for your business.",
+        "tier": "none", "impact": None,
+        "verify": "Only the map listing lacks a website. Search for the business before assuming they don't have one.",
+        "talk": None,
+    },
+    "website_unknown": {
+        "tier": "none", "impact": None,
+        "verify": "No source listed a website and no search ran. Search the business name and phone yourself.",
+        "talk": None,
+    },
+    "website_match_uncertain": {
+        "tier": "none", "impact": None,
+        "verify": "Open the candidate site(s) and check whether they show this business's phone or address; "
+                  "use Edit website to confirm the right one.",
+        "talk": None,
+    },
+    "website_conflict": {
+        "tier": "none", "impact": None,
+        "verify": "Sources list different websites. Check which one is current before mentioning either.",
+        "talk": None,
+    },
+    "website_identity_unconfirmed": {
+        "tier": "none", "impact": None,
+        "verify": "The site exists, but its pages didn't show this business's phone or address. Confirm it's theirs "
+                  "before raising problems with it.",
+        "talk": None,
+    },
+    "new_registration": {
+        "tier": "weak", "actionability": 0.8,
+        "impact": "A recently registered business may not have a website or online presence set up yet.",
+        "verify": "A state registration shows the legal entity exists, not that it's operating. Look for signs it has "
+                  "opened (listing, phone, signage) before reaching out.",
+        "talk": "I saw your business was recently registered with the state. Congratulations on the launch.",
     },
     "social_only": {
         "tier": "strong",

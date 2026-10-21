@@ -1,5 +1,5 @@
 from app.analysis.website import inspect_html, is_social
-from app.discovery.brave import pick_official
+from app.websites import _classify_url
 from app.discovery.osm import build_query, element_to_business
 from app.scoring import score_lead
 
@@ -79,10 +79,12 @@ def test_build_query():
     assert 'nwr["craft"="hvac"](1,2,3,4);' in q and q.startswith("[out:json]")
 
 
-def test_pick_official_skips_directories():
-    urls = ["https://www.yelp.com/biz/ace-plumbing-tampa", "https://www.aceplumbingtampa.com/about"]
-    assert pick_official("Ace Plumbing", urls) == "https://www.aceplumbingtampa.com/"
-    assert pick_official("Ace Plumbing", urls[:1]) is None
+def test_directory_and_social_urls_are_not_business_sites():
+    # Replaces the old name-only matcher (pick_official), which could turn a search miss
+    # into a "confirmed no website". Identity is now decided from the candidate page.
+    assert _classify_url("https://www.bbb.org/us/fl/tampa/profile/ace") == "directory"
+    assert _classify_url("https://www.yelp.com/biz/ace-plumbing-tampa") in ("directory", "social")
+    assert _classify_url("https://www.aceplumbingtampa.com/about") is None
     assert is_social("https://m.facebook.com/aceplumbing")
 
 
