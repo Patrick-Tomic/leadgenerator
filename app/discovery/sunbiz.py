@@ -44,7 +44,7 @@ BUSINESS_FILING_TYPES = {"DOMP": "Florida corporation", "FLAL": "Florida LLC", "
 
 # Name keywords for inferring a category from a registration name (OSM tags aren't available here).
 INDUSTRY_KEYWORDS = {
-    "hvac": r"air condition|\bhvac\b|heating|cooling|\ba/?c\b",
+    "hvac": r"air condition|\bhvac\b|heating|cooling|\ba/?c\b|mechanical",
     "plumbing": r"plumb|rooter|drain",
     "electrical": r"electric",
     "roofing": r"roof",
@@ -52,7 +52,7 @@ INDUSTRY_KEYWORDS = {
     "pool": r"\bpools?\b",
     "pressure_washing": r"pressure wash|power wash|soft wash",
     "landscaping": r"landscap|lawn|tree (service|care|trimming)",
-    "auto_repair": r"auto (repair|service)|automotive|mechanic|tire",
+    "auto_repair": r"auto (repair|service)|automotive|\bmechanics?\b|\btires?\b|body shop",
     "cleaning": r"cleaning|maid|janitor",
     "pest_control": r"pest|termite|extermin",
     "locksmith": r"locksmith",
