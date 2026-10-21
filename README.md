@@ -56,7 +56,7 @@ discovery scans ──► dedup ──► leads ──► website audit ──�
                     name+place)           confidence)       weights)            notes, brief)
 ```
 
-1. **Discover** (`app/discovery/`, `app/pipeline.py`). Discovery runs as *scans*: one adapter × one named area (county-sized boxes in `config.AREAS`) × one category (25 in `config.INDUSTRIES`). Each scan is logged in `discovery_scans` with mode, counts (found / added / merged) and any error. A scan that never ran is a *full* scan; after `OVERPASS_CACHE_DAYS` (7) it re-runs *incrementally*, fetching only OSM elements edited since the last successful scan (minus a 1-day overlap). Failed scans wait out a cooldown (30 min, doubling, max 24 h) and never stop other scans; 3 failures in a row pause the refill. Chains and franchises (OSM `brand` tags) are skipped because they rarely buy local web work.
+1. **Discover** (`app/discovery/`, `app/pipeline.py`). **States** (Florida, Georgia, South Carolina, North Carolina) are discovered from free [Geofabrik](https://download.geofabrik.de/) OpenStreetMap extracts: one download per state, refreshed every `EXTRACT_REFRESH_DAYS` (30). Each extract is read locally in a separate process, so the public Overpass server isn't used for statewide work. Its own notice says it's meant for browser-based, human-operated tools and points high-volume automated use elsewhere. One extract scan covers **every business type** (48 categories, see below). **Counties** can still be searched through Overpass as before. Discovery runs as *scans*: one adapter × one named area (county-sized boxes in `config.AREAS`) × one category (25 in `config.INDUSTRIES`). Each scan is logged in `discovery_scans` with mode, counts (found / added / merged) and any error. A scan that never ran is a *full* scan; after `OVERPASS_CACHE_DAYS` (7) it re-runs *incrementally*, fetching only OSM elements edited since the last successful scan (minus a 1-day overlap). Failed scans wait out a cooldown (30 min, doubling, max 24 h) and never stop other scans; 3 failures in a row pause the refill. Chains and franchises (OSM `brand` tags) are skipped because they rarely buy local web work.
    - **Dedup** (`app/dedup.py`): a record is the same business if it has the same source ID, the same website domain (social/directory hosts ignored), the same 10-digit phone, or the same normalized name within 300 m. Merges only fill missing fields; a newly learned website triggers a re-audit. Every source record is kept in `lead_sources`.
 2. **Analyze** (`app/analysis/`). For each business the analyzer:
    - **Reachability:** DNS, SSL, timeouts, HTTP errors, redirect loops, and an HTTPS check. A site is only reported down after failing twice, 5 s apart; one failure followed by success is reported as *intermittent* (probable).
@@ -97,6 +97,20 @@ Every finding separates **what was observed** (the stored evidence and affected 
 Each lead stores an explanation (strongest evidence, main uncertainty, verification list). It appears in the UI, in the CSV export, and in the AI brief prompt. Talking points state what was observed and never claim the business is losing customers or revenue.
 
 Weights are configurable per customer in the profile's `scoring` section (`tier_points`, `confidence_mult`, `decay`, `optional_cap`, `contact_mult`, `point_overrides`, `grade_thresholds`). v0.2 profiles still load: `high/medium/low` confidence keys are mapped automatically, and retired keys (`severity_points`, `contact_bonus`, `cap`) are ignored.
+
+### Business types and chains
+
+48 categories, most specific first: the 25 trades, then restaurants, cafés/bakeries, bars/breweries, insurance, banks/finance, accounting/tax, law, real estate, dentists, medical/therapy, vet/pet, salons/spas, fitness, lodging, childcare/schools, venues, auto sales, car washes, funeral homes, self storage. Catch-alls follow, so any type of company is covered: other retail shops, other offices, other trades.
+
+Chains and franchise locations are excluded in two ways: brand-tagged objects are skipped, and so is any name that appears at `CHAIN_MIN_LOCATIONS` (5) or more places in a state, since many chain locations lack brand tags. Expect few banks and insurance offices as a result: most are chains or franchise agents.
+
+**Home market first:** businesses inside `PRIORITY_AREAS` (Hillsborough, Pinellas, Pasco, Manatee) are website-checked before the rest of the state.
+
+**Measured on this machine** (2 cores, 3 GB RAM, SD card), Florida in October 2026:
+- **Download:** 659 MB in 48 s.
+- **Read:** pass 1 (businesses) ~25 s, pass 2 (coordinates of building outlines) ~8 min, under 300 MB of memory.
+- **Result:** 45,176 independent businesses, 14,302 with a website. 7,986 are in Tampa Bay, 2,576 of those with a website.
+- **Not covered:** businesses mapped only as relations, or with nothing but a name and a building.
 
 ## Customer profiles
 
@@ -147,7 +161,8 @@ v2 adds a score explanation per customer lead, the audit version per business, a
 
 | Source | Cost | Coverage | Licensing / terms | Verdict |
 |---|---|---|---|---|
-| **OpenStreetMap via Overpass** | Free | Moderate for trades: good on auto repair and HVAC, patchy on home-based businesses. Often includes phone, website, and address. | ODbL: commercial use OK with attribution (shown in the footer). Fair use of public instances. | **Used, primary.** |
+| **OpenStreetMap via Geofabrik state extracts** | Free (FL 628 MB, GA 341 MB, NC 410 MB, SC 157 MB; whole US 11.4 GB) | All mapped businesses in a state | ODbL, same as Overpass; built for bulk download | **Used, primary for states.** |
+| **OpenStreetMap via Overpass** | Free | Moderate for trades: good on auto repair and HVAC, patchy on home-based businesses. Often includes phone, website, and address. | ODbL: commercial use OK with attribution (shown in the footer). Fair use of public instances. | **Used for county-level profiles.** Not for statewide or high-volume work. |
 | **Brave Search API** | Free tier ~2k queries/month, 1 q/s; paid after | Web-wide | Results may be used in apps per their API terms | **Used, optional**, to confirm or find official websites |
 | Official business websites | Free | Per business | Public pages only; robots.txt honored; no logins, form submissions, or CAPTCHA bypass | **Used** for analysis |
 | Google Places API (New) | Text Search with website/phone fields bills at the Enterprise SKU: 1,000 free calls/month, then about $35 per 1,000 (Google pricing page, Oct 2026) | Best coverage | Place IDs may be stored indefinitely; other content has caching restrictions | **Implemented, optional, off by default.** Website finder only; tested against representative responses, not the live API (no key available). |
@@ -187,6 +202,26 @@ To add a source, subclass `DiscoveryAdapter` (or `WebsiteFinder`) in `app/discov
 - A promoted registration gets a *recently registered* finding. It's a minor signal, and verified only with operating evidence: another independent listing or a live website.
 
 **Not verified live:** the official date format isn't documented. The parser accepts MMDDYYYY or YYYYMMDD and rejects anything ambiguous. My one attempt to log in to the public SFTP from this environment was refused, so the parser is tested on fixtures built from the official layout, not on a downloaded file. Import one real daily file and check the *Recent imports* line (rejected count and reasons) before relying on it.
+
+## Florida contractor licenses (DBPR)
+
+The Department of Business and Professional Regulation publishes its construction licensee file as a free public-records download (Chapter 119, F.S.), refreshed weekly: [construction public records](https://www2.myfloridalicense.com/construction-industry/public-records/). Click **Update state contractor licenses** on the *New registrations* tab, or run `.venv/bin/python -m app.cli licenses-update`. It downloads only when DBPR has published a newer file and imports in one transaction (about 30 s for ~230,000 records).
+
+- **What it adds:** whether a company holds a current state contractor license (general, building, residential, roofing, A/C, mechanical, plumbing, pool, solar…), its DBA name, and when it was licensed. That's evidence the company is operating. Electrical contractors are licensed by a separate board and aren't included.
+- **Matching:** same normalized company or DBA name; same ZIP or city makes it *high*, name only *medium*. A known business gets license provenance only on a high match.
+- **Flags on registrations:**
+  - *state license*: holds a current state contractor license; listed first.
+  - *established business*: licensed more than 6 months before the filing, i.e. an existing company filing a new name.
+- **Privacy:** for individual licensees ("LAST, FIRST") only the business/DBA name, city, ZIP and license are kept, never the person's name or street address. Officer rows are skipped.
+- **Status codes aren't documented** on the download page. A license counts as active when its primary status is `C` and its secondary status isn't `I`. Records that disappear from a later weekly file are marked inactive.
+- **No phone numbers:** the licensee file doesn't include them.
+
+## Phone numbers
+
+No free official source publishes business phone numbers for new registrations. Sunbiz and the DBPR licensee file have none. DBPR's *applicant* file has phones, but they belong to individuals and aren't used. Phones come from:
+- the business listing (OSM `phone`, `contact:phone`, `mobile`);
+- the business's own website, **only when the site is verified as theirs** and no listing had a phone (labeled "Business's own website");
+- you: **Add/Edit** next to Phone on any lead (labeled "Entered by you").
 
 ## Development
 

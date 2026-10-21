@@ -34,6 +34,12 @@
         <option value="not_fit">Not a fit</option>
         <option value="skipped">Skipped</option>
       </select>
+      <select id="grade-filter">
+        <option value="">All grades</option>
+        <option value="AB" selected>Grade A–B</option>
+        <option value="C">Grade C</option>
+        <option value="D">Grade D</option>
+      </select>
       <button id="discover" class="secondary">Find more leads now</button>
       <a id="export" class="button secondary" href="/api/export.csv">Export CSV</a>
     </div>
@@ -47,6 +53,7 @@
     <div class="toolbar">
       <label class="check"><input type="checkbox" id="reg-all"> Show all areas and industries</label>
       <button id="reg-import" class="secondary">Import downloaded Sunbiz files</button>
+      <button id="lic-update" class="secondary">Update state contractor licenses</button>
     </div>
     <p class="muted" id="reg-help"></p>
     <div id="reg-imports"></div>

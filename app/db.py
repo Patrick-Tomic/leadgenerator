@@ -21,7 +21,8 @@ from .profiles import profile_hash
 _lock = threading.RLock()
 _conn: sqlite3.Connection | None = None
 
-JSON_COLS = ("raw", "findings", "opportunities", "profile", "explanation", "fields", "metadata", "match_evidence", "flags")
+JSON_COLS = ("raw", "findings", "opportunities", "profile", "explanation", "fields", "metadata", "match_evidence", "flags",
+             "license_evidence")
 STATUSES = ("new", "saved", "contacted", "won", "not_fit", "skipped")
 BUSINESS_COLS = ("id", "source", "source_id", "name", "industry", "address", "city", "lat", "lon", "phone", "email",
                  "website", "raw", "discovered_at", "last_seen_at", "analyzed_at", "website_status", "final_url", "findings",
@@ -105,7 +106,18 @@ MATCH_EXPLANATION = {
 }
 
 
-def upsert_business(b: dict, area: str | None = None) -> str:
+def _priority(b: dict) -> int:
+    """0 = website-check first (inside config.PRIORITY_AREAS), 1 = everything else."""
+    if b.get("lat") is None or b.get("lon") is None:
+        return 1
+    for a in config.PRIORITY_AREAS:
+        s, w, n, e = config.AREAS[a]["bbox"]
+        if s <= b["lat"] <= n and w <= b["lon"] <= e:
+            return 0
+    return 1
+
+
+def upsert_business(b: dict, area: str | None = None, commit: bool = True) -> str:
     """Store a discovered business record. Returns 'added', 'merged' (new source record
     for a known business) or 'seen' (source record already known)."""
     ts = now()
@@ -118,10 +130,10 @@ def upsert_business(b: dict, area: str | None = None) -> str:
             k = keys(b)
             cur = c.execute(
                 """INSERT INTO leads (source, source_id, name, industry, address, city, lat, lon, phone, email, website, raw,
-                                      discovered_at, last_seen_at, norm_name, norm_domain, norm_phone)
+                                      discovered_at, last_seen_at, norm_name, norm_domain, norm_phone, priority)
                    VALUES (:source, :source_id, :name, :industry, :address, :city, :lat, :lon, :phone, :email, :website, :raw,
-                           :ts, :ts, :norm_name, :norm_domain, :norm_phone)""",
-                {**b, **k, "raw": raw, "ts": ts},
+                           :ts, :ts, :norm_name, :norm_domain, :norm_phone, :priority)""",
+                {**b, **k, "raw": raw, "ts": ts, "priority": _priority(b)},
             )
             lead_id, outcome = cur.lastrowid, "added"
         else:
@@ -160,7 +172,8 @@ def upsert_business(b: dict, area: str | None = None) -> str:
                          match_evidence, check_status, first_seen_at) VALUES (?, ?, ?, ?, ?, 'high', ?, 'unchecked', ?)""",
                       (lead_id, website, keys({"website": website})["norm_domain"], b["source"], b["source_id"],
                        json.dumps([f"listed on the {b['source']} record for this business"]), ts))
-        c.commit()
+        if commit:
+            c.commit()
     return outcome
 
 
@@ -195,6 +208,29 @@ def set_website(lead_id: int, url: str) -> None:
                      ON CONFLICT (lead_id, url, source) DO UPDATE SET selected=1""",
                   (lead_id, url, keys({"website": url})["norm_domain"], json.dumps(["entered by a person reviewing the lead"]), ts))
         c.commit()
+
+
+def set_phone(lead_id: int, phone: str, source: str, explanation: str, overwrite: bool) -> bool:
+    """Record a phone number with its provenance. Without overwrite, an existing phone is
+    kept (the new one is still stored as that source's contribution). Returns True if the
+    business's phone changed."""
+    ts = now()
+    norm = keys({"phone": phone})["norm_phone"]
+    with _lock:
+        c = conn()
+        industry, current = c.execute("SELECT industry, phone FROM leads WHERE id=?", (lead_id,)).fetchone()
+        c.execute(
+            """INSERT INTO lead_sources (lead_id, source, source_id, industry, area, raw, first_seen_at, last_seen_at, fields,
+                                         match_confidence, match_explanation, last_checked_at)
+               VALUES (?, ?, ?, ?, NULL, '{}', ?, ?, ?, 'high', ?, ?)
+               ON CONFLICT (source, source_id) DO UPDATE SET fields=excluded.fields, last_seen_at=excluded.last_seen_at,
+                   match_explanation=excluded.match_explanation, last_checked_at=excluded.last_checked_at""",
+            (lead_id, source, f"phone/{lead_id}", industry, ts, ts, json.dumps({"phone": phone, "phones": [phone]}), explanation, ts))
+        changed = overwrite or not current
+        if changed:
+            c.execute("UPDATE leads SET phone=?, norm_phone=? WHERE id=?", (phone, norm, lead_id))
+        c.commit()
+    return changed
 
 
 def save_analysis(lead_id: int, result: dict) -> None:
@@ -281,7 +317,7 @@ def unanalyzed(limit: int) -> list[dict]:
     from .analysis.website import AUDIT_VERSION
     rows = conn().execute(
         """SELECT * FROM leads WHERE analyzed_at IS NULL OR audit_version < ?
-           ORDER BY analyzed_at IS NOT NULL, (website IS NULL), discovered_at LIMIT ?""", (AUDIT_VERSION, limit)
+           ORDER BY analyzed_at IS NOT NULL, priority, (website IS NULL), discovered_at LIMIT ?""", (AUDIT_VERSION, limit)
     ).fetchall()
     return [_row(r) for r in rows]
 

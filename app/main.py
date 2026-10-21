@@ -96,6 +96,7 @@ def status(customer: str | None = None):
         "customer": {"slug": cust["slug"], "name": cust["name"]},
         "pipeline": pipeline.state,
         "ready_target": p["ready_pool_target"],
+        "min_score": p["min_score"],
         "region": p["region_label"],
         "areas": {a: config.AREAS[a]["label"] for a in p["areas"]},
         "industries": {k: config.INDUSTRIES[k]["label"] for k in p["industries"]},
@@ -111,7 +112,9 @@ def scans(limit: int = 50):
 
 
 @app.get("/api/next")
-def next_lead(customer: str | None = None, exclude: str = ""):
+async def next_lead(customer: str | None = None, exclude: str = ""):
+    # async: start_refill schedules a task on the running event loop, which a plain
+    # (threadpool) endpoint doesn't have.
     cust = _customer(customer)
     p = cust["profile"]
     ids = [int(x) for x in exclude.split(",") if x.strip().isdigit()]
@@ -159,6 +162,24 @@ async def brief(lead_id: int, customer: str | None = None):
     return _public(db.get_lead(cust["id"], lead_id))
 
 
+class PhoneCorrection(BaseModel):
+    phone: str
+
+
+@app.post("/api/leads/{lead_id}/phone")
+def correct_phone(lead_id: int, body: PhoneCorrection, customer: str | None = None):
+    """A person found the business's phone number: store it (labeled as entered by you) and re-score."""
+    from .dedup import normalize_phone
+    cust = _customer(customer)
+    _lead_or_404(cust, lead_id)
+    p = normalize_phone(body.phone)
+    if not p:
+        raise HTTPException(400, "Enter a 10-digit US phone number.")
+    db.set_phone(lead_id, f"({p[:3]}) {p[3:6]}-{p[6:]}", "manual", "entered by a person reviewing the lead", overwrite=True)
+    qualify_business(lead_id)
+    return _public(db.get_lead(cust["id"], lead_id))
+
+
 class WebsiteCorrection(BaseModel):
     website: str
 
@@ -197,7 +218,7 @@ async def _reaudit(cust: dict, lead_id: int) -> dict:
 
 
 @app.post("/api/discover")
-def discover(customer: str | None = None):
+async def discover(customer: str | None = None):
     started = pipeline.start_refill(_customer(customer)["slug"], force=True)
     return {"started": started, "pipeline": pipeline.state}
 
@@ -217,6 +238,17 @@ def import_registrations(force: bool = False):
     if not config.SUNBIZ_IMPORT_DIR.exists():
         raise HTTPException(404, f"Put Sunbiz data files in {config.SUNBIZ_IMPORT_DIR} first (see README).")
     return {"results": registrations.import_dir(force=force)}
+
+
+@app.post("/api/licenses/update")
+def update_licenses(force: bool = False):
+    """Download DBPR's weekly contractor license file if newer, import it, and re-match."""
+    from . import licenses
+    try:
+        dl = licenses.download()
+    except Exception as e:
+        raise HTTPException(502, f"Couldn't download the DBPR file: {e}")
+    return {"download": dl, "import": licenses.import_file(force=force)}
 
 
 class Promote(BaseModel):

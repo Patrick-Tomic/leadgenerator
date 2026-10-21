@@ -7,7 +7,8 @@ from .websites import STATE_LABEL
 
 SOURCE_LABEL = {"osm": "OpenStreetMap", "manual": "Entered by you", "sunbiz_cor": "Florida Sunbiz (corporation/LLC)",
                 "sunbiz_fic": "Florida Sunbiz (fictitious name)", "google_places": "Google Places",
-                "search:brave": "Brave search", "website": "Business's own website"}
+                "search:brave": "Brave search", "website": "Business's own website",
+                "dbpr_cilb": "Florida DBPR contractor license"}
 # Field, label, and how to compare values for conflicts (None: not compared).
 FIELDS = [
     ("name", "Name", lambda v: v.lower()), ("alt_names", "Other names", None), ("legal_name", "Legal entity name", None),
@@ -17,6 +18,8 @@ FIELDS = [
     ("phone", "Phone", normalize_phone), ("phones", "All phone numbers", None), ("email", "Email", lambda v: v.lower()),
     ("website", "Website", normalize_domain), ("social", "Social profiles", None), ("opening_hours", "Opening hours", None),
     ("description", "Description", None), ("operator", "Operator", None), ("start_date", "Start date", None),
+    ("license", "State license", None), ("license_status", "License status", None), ("licensed_since", "Licensed since", None),
+    ("dba_name", "Doing business as", None),
 ]
 CONFLICT_FIELDS = {"phone", "email", "website", "address"}
 

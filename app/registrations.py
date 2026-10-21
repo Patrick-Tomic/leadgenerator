@@ -80,7 +80,7 @@ def import_file(path: Path, kind: str | None = None, since: str | None = None, f
 def _upsert(c, rec: dict, file_name: str, ts: str) -> bool:
     """Insert or refresh one registration. Returns True if it was new."""
     exists = c.execute("SELECT id FROM registrations WHERE source=? AND doc_number=?", (rec["source"], rec["doc_number"])).fetchone()
-    values = {**rec, "norm_name": normalize_name(rec["name"]), "area": infer_area(rec["principal_city"]),
+    values = {**rec, "norm_name": normalize_name(rec["name"]), "area": infer_area(rec["principal_city"]) or "us-fl",
               "industry": infer_industry(rec["name"]), "source_url": SEARCH_URL, "source_file": file_name, "ts": ts}
     if exists:
         c.execute("""UPDATE registrations SET name=:name, norm_name=:norm_name, status=:status, entity_type=:entity_type,
@@ -177,9 +177,19 @@ def refresh_flags() -> None:
         if reg["filing_date"] and reg["filing_date"] >= cutoff:
             flags.append("new_entity")
         lead = None
+        if reg.get("license_id"):
+            lic = c.execute("SELECT active, original_date FROM licenses WHERE id=?", (reg["license_id"],)).fetchone()
+            if lic and lic[0]:
+                flags.append("state_license")
+                flags.append("operating_evidence")  # holds a current state contractor license
+                # Licensed long before this filing: an existing company filing a new name (often a
+                # DBA), not a new business.
+                if lic[1] and reg["filing_date"] and lic[1] < (date.fromisoformat(reg["filing_date"]) - timedelta(days=180)).isoformat():
+                    flags.append("established_business")
         if reg["match_lead_id"] and reg["match_confidence"] == "high":
             lead = c.execute("SELECT website_state FROM leads WHERE id=?", (reg["match_lead_id"],)).fetchone()
-            flags.append("operating_evidence")  # also appears in an independent business listing
+            if "operating_evidence" not in flags:
+                flags.append("operating_evidence")  # also appears in an independent business listing
         if not lead or lead[0] not in ("verified", "found_unverified"):
             flags.append("no_confirmed_website")
         if reg["industry"]:
@@ -194,11 +204,19 @@ def refresh_flags() -> None:
 
 def list_registrations(profile: dict | None = None, limit: int = 200) -> list[dict]:
     """Registrations, newest filings first. With a profile, only its areas and industries."""
-    rows = [db._row(r) for r in db.conn().execute(
-        "SELECT * FROM registrations ORDER BY filing_date DESC, id DESC LIMIT ?", (limit * 5,)).fetchall()]
+    """Licensed (operating) companies first, then newest filings."""
+    q = """SELECT r.*, l.occupation_code AS license_occupation, l.license_number, l.active AS license_active,
+                  l.original_date AS licensed_since, l.dba_name AS license_dba
+           FROM registrations r LEFT JOIN licenses l ON l.id = r.license_id"""
+    args: list = []
     if profile:
-        rows = [r for r in rows if r["area"] in profile["areas"] and r["industry"] in profile["industries"]]
-    return rows[:limit]
+        # A county is in scope when the profile covers it or the state containing it.
+        areas = sorted(a for a in config.AREAS if config.area_ancestors(a) & set(profile["areas"]))
+        q += f" WHERE r.area IN ({','.join('?' * len(areas))}) AND r.industry IN ({','.join('?' * len(profile['industries']))})"
+        args = [*areas, *profile["industries"]]
+    q += """ ORDER BY (l.active = 1 AND r.license_match_confidence = 'high') DESC, (l.active = 1) DESC,
+                      r.filing_date DESC, r.id DESC LIMIT ?"""
+    return [db._row(r) for r in db.conn().execute(q, (*args, limit)).fetchall()]
 
 
 def promote(reg_id: int, industry: str | None = None) -> int:
@@ -226,6 +244,11 @@ def promote(reg_id: int, industry: str | None = None) -> int:
     db.upsert_business(b, area=reg["area"])
     lead_id = db.conn().execute("SELECT lead_id FROM lead_sources WHERE source=? AND source_id=?",
                                 (reg["source"], reg["doc_number"])).fetchone()[0]
+    if reg.get("license_id"):
+        from .licenses import add_license_source
+        lic = db._row(db.conn().execute("SELECT * FROM licenses WHERE id=?", (reg["license_id"],)).fetchone())
+        add_license_source(lead_id, industry, lic, list(reg.get("license_evidence") or []))
+        db.conn().commit()
     db._write("UPDATE registrations SET promoted_lead_id=? WHERE id=?", (lead_id, reg_id))
     return lead_id
 

@@ -29,7 +29,7 @@ from .profiles import default_profile
 #   info        - neutral context, not an issue (e.g. a form we found but didn't test)
 UNAVAILABLE_CODES = {"access_restricted", "robots_blocked", "unreadable_page", "analysis_error",
                      "website_unknown", "website_match_uncertain", "no_website_unverified"}
-INFO_CODES = {"website_found_by_search", "form_untested", "website_conflict", "website_identity_unconfirmed"}
+INFO_CODES = {"website_found_by_search", "form_untested", "website_conflict", "website_identity_unconfirmed", "phone_from_website"}
 # Findings about "is there a website at all"; everything else is about the audited site,
 # and counts less if we couldn't confirm that site belongs to the business.
 WEBSITE_EXISTENCE_CODES = {"no_website_confirmed", "no_website_unverified", "social_only", "parked_or_placeholder",
@@ -200,10 +200,18 @@ def exclusion_reason(lead: dict, profile: dict, lead_areas: set[str] = frozenset
     industries = set(lead_industries) | {lead["industry"]}
     if not industries & set(profile["industries"]):
         return "industry not targeted"
-    if lead.get("lat") is not None and lead.get("lon") is not None:
-        if not any(in_bbox(lead["lat"], lead["lon"], config.AREAS[a]["bbox"]) for a in profile["areas"]):
-            return "outside service areas"
-    elif not set(lead_areas) & set(profile["areas"]):
+    has_coords = lead.get("lat") is not None and lead.get("lon") is not None
+    found_in = set().union(*(config.area_ancestors(a) for a in lead_areas)) if lead_areas else set()
+
+    def covers(area: str) -> bool:
+        spec = config.AREAS[area]
+        if has_coords and not spec.get("extract"):
+            return in_bbox(lead["lat"], lead["lon"], spec["bbox"])   # counties: exact location check
+        if area in found_in:
+            return True    # found by a scan of this area or of a county inside it (states: exact boundaries)
+        return has_coords and not lead_areas and in_bbox(lead["lat"], lead["lon"], spec["bbox"])
+
+    if not any(covers(a) for a in profile["areas"]):
         return "outside service areas"
     ex = profile["exclusions"]
     for pat in ex["name_patterns"]:

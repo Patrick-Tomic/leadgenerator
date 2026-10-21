@@ -2,14 +2,14 @@
   "slug": "atomic",
   "name": "Atomic Consulting and Solutions",
   "description": "A small software consultancy in Tampa Bay, FL that builds websites, full-stack apps, AI chatbots, automation and SEO for local businesses.",
-  "region_label": "Tampa Bay, FL",
+  "region_label": "Florida, Georgia, South Carolina & North Carolina",
   "active": true,
-  "ready_pool_target": 15,
+  "ready_pool_target": 5,
   "areas": [
-    "hillsborough",
-    "pinellas",
-    "pasco",
-    "manatee"
+    "us-fl",
+    "us-ga",
+    "us-sc",
+    "us-nc"
   ],
   "industries": [
     "hvac",
@@ -36,14 +36,37 @@
     "moving",
     "towing",
     "auto_detailing",
-    "solar"
+    "solar",
+    "restaurant",
+    "cafe_bakery",
+    "bar_brewery",
+    "insurance",
+    "bank_finance",
+    "accounting_tax",
+    "legal",
+    "real_estate",
+    "dental",
+    "medical",
+    "veterinary_pet",
+    "beauty_salon",
+    "fitness",
+    "lodging",
+    "childcare_education",
+    "entertainment",
+    "auto_sales",
+    "car_wash",
+    "funeral",
+    "storage",
+    "retail",
+    "professional_office",
+    "trades_other"
   ],
   "exclusions": {
     "name_patterns": [],
     "domains": [],
     "website_statuses": []
   },
-  "min_score": 1,
+  "min_score": 40,
   "offerings": {
     "new_website": {
       "label": "New business website",

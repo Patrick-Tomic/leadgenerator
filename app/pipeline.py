@@ -16,12 +16,17 @@ from .analysis.website import analyze_site, finding, is_social, normalize_url
 from .discovery.base import DiscoveryAdapter, SourceError
 from .discovery.brave import get_finders
 from .discovery.osm import OverpassAdapter
+from .discovery.osm_extract import OsmExtractAdapter
 from .qualify import qualify_business
 from .websites import verify_website
 
 log = logging.getLogger(__name__)
 
 ADAPTERS: list[DiscoveryAdapter] = [OverpassAdapter()]
+# Areas with a Geofabrik extract (states) are read from the extract instead: one scan
+# covers every category, and the public Overpass server isn't used for them.
+EXTRACT_ADAPTER = OsmExtractAdapter()
+ALL_CATEGORIES = "*"
 # Re-fetch a little before the last scan so edits that reached the source late aren't missed.
 INCREMENTAL_OVERLAP = timedelta(days=1)
 # Load failures that can be temporary (a dead domain is not in this list).
@@ -59,8 +64,18 @@ def plan_scans(profile: dict, now: datetime | None = None) -> list[dict]:
     now = now or datetime.now(timezone.utc)
     fresh_for = timedelta(days=config.OVERPASS_CACHE_DAYS)
     due = []
+    for area in [a for a in profile["areas"] if config.AREAS[a].get("extract")]:
+        h = db.scan_history(EXTRACT_ADAPTER.name, area, ALL_CATEGORIES)
+        if h["failures"] and h["last_failure"]:
+            cooldown = timedelta(minutes=min(config.SCAN_RETRY_MINUTES * 2 ** (h["failures"] - 1), 24 * 60))
+            if now - _ts(h["last_failure"]) < cooldown:
+                continue
+        if h["last_ok"] and now - _ts(h["last_ok"]) < timedelta(days=config.EXTRACT_REFRESH_DAYS):
+            continue
+        due.append({"adapter": EXTRACT_ADAPTER, "area": area, "industry": ALL_CATEGORIES, "since": None,
+                    "mode": "extract", "last_ok": h["last_ok"] or ""})
     for adapter in ADAPTERS:
-        for area in profile["areas"]:
+        for area in [a for a in profile["areas"] if not config.AREAS[a].get("extract")]:
             for industry in profile["industries"]:
                 h = db.scan_history(adapter.name, area, industry)
                 if h["failures"]:
@@ -83,8 +98,10 @@ async def run_scan(scan: dict) -> dict:
     """Run one discovery scan and store results. Never raises for source failures."""
     adapter, area, industry = scan["adapter"], scan["area"], scan["industry"]
     scan_id = db.start_scan(adapter.name, area, industry, scan["mode"], scan["since"])
-    _set(f"Discovering {config.INDUSTRIES[industry]['label']} in {config.AREAS[area]['label']} via {adapter.name}"
-         + (" (changes only)" if scan["since"] else "") + "…")
+    what = "all business types" if industry == ALL_CATEGORIES else config.INDUSTRIES[industry]["label"]
+    _set(f"Discovering {what} in {config.AREAS[area]['label']} via {adapter.name}"
+         + (" (changes only)" if scan["since"] else "")
+         + (" (downloading and reading the state file takes several minutes)" if scan["mode"] == "extract" else "") + "…")
     try:
         found = await adapter.discover(industry, area, scan["since"])
     except SourceError as e:
@@ -95,7 +112,14 @@ async def run_scan(scan: dict) -> dict:
         log.exception("scan %s/%s/%s crashed", adapter.name, area, industry)
         db.finish_scan(scan_id, "error", error=f"{type(e).__name__}: {e}"[:500])
         return {"status": "error", "error": str(e)}
-    outcomes = [db.upsert_business(b, area) for b in found]
+    outcomes = []
+    for i, b in enumerate(found, 1):
+        outcomes.append(db.upsert_business(b, area, commit=False))
+        if i % 500 == 0:
+            db.conn().commit()
+            _set(f"Saving {what} in {config.AREAS[area]['label']}: {i:,}/{len(found):,}")
+            await asyncio.sleep(0)  # let the web app serve requests between batches
+    db.conn().commit()
     stats = {"found": len(found), "added": outcomes.count("added"), "merged": outcomes.count("merged")}
     db.finish_scan(scan_id, "ok", **stats)
     return {"status": "ok", **stats}
@@ -154,6 +178,17 @@ async def analyze_business(b: dict, fetcher: PoliteFetcher, finders: list | None
             elif f["code"] in TRANSIENT_FAILURES and was_down:
                 f["evidence"] += f" Also down at the previous audit ({b['analyzed_at'][:10]})."
         findings += site["findings"]
+        # A phone shown on a site verified as the business's own is the business's published
+        # number: save it when no source listed one (it never replaces a listed phone).
+        site_phones = facts.get("site_phones") or []
+        if state == "verified" and site_phones and not b.get("phone") and b.get("id"):
+            p = site_phones[0]
+            shown = f"({p[:3]}) {p[3:6]}-{p[6:]}"
+            if db.set_phone(b["id"], shown, "website", f"shown on the business's own website ({best['url']}), verified as theirs",
+                            overwrite=False):
+                b["phone"] = shown
+                findings.append(finding("phone_from_website", "Phone number taken from the business's website",
+                                        f"No listing had a phone; {shown} is shown on {best['url']}.", "low", "high", page=best["url"]))
         if state == "found_unverified":
             findings.insert(0, finding("website_identity_unconfirmed", "Website found, not yet verified",
                                        f"{best['url']} ({best['source']}): {'; '.join(best['match_evidence'][-3:])}. "
@@ -176,8 +211,12 @@ async def analyze_business(b: dict, fetcher: PoliteFetcher, finders: list | None
     reg = next((s for s in sources if s["source"].startswith("sunbiz")), None)
     if reg:
         rf = reg.get("fields") or {}
-        others = sorted({s["source"] for s in sources if not s["source"].startswith("sunbiz") and s["source"] != "manual"})
+        from .details import label
+        others = sorted({label(s["source"]) for s in sources if not s["source"].startswith("sunbiz") and s["source"] != "manual"})
         operating = others or state in ("verified", "found_unverified")
+        lic = next(((s.get("fields") or {}) for s in sources if s["source"] == "dbpr_cilb"), {})
+        if lic.get("licensed_since") and rf.get("filing_date") and lic["licensed_since"] < rf["filing_date"][:4] + "-01-01":
+            rf = {**rf, "entity_type": f"{rf.get('entity_type')}; state-licensed since {lic['licensed_since']}, so an established company"}
         evidence = (f"Filed {rf.get('filing_date')} as {rf.get('entity_type')} (document {rf.get('doc_number')}). "
                     + (f"Operating evidence: listed on {', '.join(others)}" if others else
                        "Operating evidence: a website was found" if operating else

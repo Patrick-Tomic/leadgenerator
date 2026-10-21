@@ -278,6 +278,8 @@ def test_legacy_scan_of_containing_area_makes_rescan_incremental(tmpdb, monkeypa
 def test_refill_stops_after_consecutive_source_failures(tmpdb, monkeypatch):
     fake = FakeAdapter(fail=True)
     monkeypatch.setattr(pipeline, "ADAPTERS", [fake])
+    # County areas use the Overpass adapter (state areas use extracts).
+    db.sync_customer(validate({**default_profile(), "areas": ["hillsborough", "pinellas"]}))
     asyncio.run(pipeline.refill("atomic"))
     assert len(fake.calls) == config.MAX_CONSECUTIVE_SCAN_FAILURES
     assert "failed in a row" in pipeline.state["error"]

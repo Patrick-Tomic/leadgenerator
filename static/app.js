@@ -56,8 +56,9 @@ const link = (u, text) => `<a href="${esc(u)}" target="_blank" rel="noopener">${
 function renderEmpty() {
   const p = status?.pipeline || {};
   $("#lead").innerHTML = `<div class="card empty">
-    <h2>${p.running ? "Researching leads…" : "No leads ready"}</h2>
-    <p>${p.running ? esc(p.step) : "All discovered leads have been reviewed. Find more to keep going."}</p>
+    <h2>${p.running ? "Searching for strong leads…" : "No strong leads ready"}</h2>
+    <p>${p.running ? esc(p.step) : "No unreviewed leads meet this customer's minimum score yet. Weaker leads are in the Pipeline tab."}</p>
+    <p class="muted">Only grade A–B leads (score ${status?.min_score ?? 40}+) are shown here. Most businesses have no serious website problems, so finding them takes many checks.</p>
     ${p.running ? "" : `<button id="empty-discover">Find more leads</button>`}
   </div>`;
   $("#empty-discover")?.addEventListener("click", async () => { await api("/api/discover", { method: "POST" }); waitForLead(); });
@@ -76,7 +77,7 @@ function renderLead(lead) {
   const mapUrl = lead.lat ? `https://www.openstreetmap.org/?mlat=${lead.lat}&mlon=${lead.lon}#map=18/${lead.lat}/${lead.lon}` : null;
   const googleUrl = `https://www.google.com/search?q=${encodeURIComponent(`${lead.name} ${lead.city || ""} FL`.replace(/\s+/g, " "))}`;
   $(".contact ul", node).innerHTML = [
-    lead.phone && `<li><span class="label">Phone</span><a href="tel:${esc(lead.phone)}">${esc(lead.phone)}</a></li>`,
+    `<li><span class="label">Phone <button class="link-btn" data-act="phone">${lead.phone ? "Edit" : "Add"}</button></span>${lead.phone ? `<a href="tel:${esc(lead.phone)}">${esc(lead.phone)}</a>` : `<span class="muted">No phone from any source</span>`}</li>`,
     lead.email && `<li><span class="label">Email</span><a href="mailto:${esc(lead.email)}">${esc(lead.email)}</a></li>`,
     `<li><span class="label">Website <button class="link-btn" data-act="website">${site ? "Edit" : "Add"}</button></span>${site ? `<a href="${esc(/^https?:/.test(site) ? site : "http://" + site)}" target="_blank" rel="noopener">${esc(site)}</a><br>` : ""}<span class="chip ws-${esc(lead.website_state || "unknown")}">${esc(lead.website_state_label || "Website status unknown")}</span></li>`,
     lead.address && `<li><span class="label">Address</span>${mapUrl ? `<a href="${mapUrl}" target="_blank" rel="noopener">${esc(lead.address)}</a>` : esc(lead.address)}</li>`,
@@ -167,7 +168,8 @@ async function loadRegistrations() {
   $("#reg-table tbody").innerHTML = data.registrations.map((r) => `
     <tr><td>${esc(r.filing_date || "")}</td><td>${esc(r.name)}<br><small class="muted">${esc(r.doc_number)}</small></td>
       <td>${esc(r.entity_type || "")}</td><td>${esc(r.principal_city || "")}</td><td>${esc(r.industry || "—")}</td>
-      <td>${(r.flags || []).map((f) => `<span class="chip">${esc(f.replace(/_/g, " "))}</span>`).join("")}</td>
+      <td>${(r.flags || []).map((f) => `<span class="chip${f === "state_license" ? " conf-verified" : ""}">${esc(f.replace(/_/g, " "))}</span>`).join("")}
+        ${r.license_occupation ? `<div class="muted">${esc(r.license_occupation)} ${esc(r.license_number || "")} · since ${esc(r.licensed_since || "?")} · ${esc(r.license_match_confidence)} match</div>` : ""}</td>
       <td>${r.match_lead_id ? `#${r.match_lead_id} <span class="chip">${esc(r.match_confidence)}</span>` : "—"}</td>
       <td>${r.promoted_lead_id ? `<button class="link-btn" data-open="${r.promoted_lead_id}">Open lead</button>`
         : `<button class="link-btn" data-promote="${r.id}">Promote to lead</button>`}</td></tr>`).join("")
@@ -184,6 +186,10 @@ async function onAction(e) {
     if (act === "brief") {
       btn.textContent = "Writing…";
       renderLead(await api(`/api/leads/${current.id}/brief`, { method: "POST" }));
+    } else if (act === "phone") {
+      const phone = prompt("Business phone number (10 digits):", current.phone || "");
+      if (!phone || !phone.trim()) { btn.disabled = false; return; }
+      renderLead(await api(`/api/leads/${current.id}/phone`, { method: "POST", body: JSON.stringify({ phone: phone.trim() }) }));
     } else if (act === "website") {
       const url = prompt("Business website (it will be re-checked now):", current.final_url || current.website || "");
       if (!url || !url.trim()) { btn.disabled = false; return; }
@@ -226,7 +232,8 @@ function waitForLead() {
 async function loadPipeline() {
   const filter = $("#filter").value ? `?status=${$("#filter").value}` : "";
   $("#export").href = `/api/export.csv${filter}${filter ? "&" : "?"}customer=${encodeURIComponent(customer || "")}`;
-  const leads = await api(`/api/leads${filter}`);
+  const g = $("#grade-filter").value;
+  const leads = (await api(`/api/leads${filter}`)).filter((l) => !g || g.includes(l.grade));
   $("#table tbody").innerHTML = leads.map((l) => `
     <tr data-id="${l.id}"><td class="num">${l.score}</td><td>${esc(l.name)}<br><small class="sev-low">${esc(l.city || "")}</small></td>
     <td>${esc(l.industry_label)}</td><td>${esc(l.opportunities?.[0]?.label || "—")}</td><td>${esc(l.status.replace("_", " "))}</td></tr>`).join("")
@@ -243,6 +250,16 @@ function show(view) {
 }
 
 $("#reg-all").addEventListener("change", () => loadRegistrations());
+$("#lic-update").addEventListener("click", async (e) => {
+  e.target.disabled = true; e.target.textContent = "Updating (about 1 minute)…";
+  try {
+    const r = await api("/api/licenses/update", { method: "POST" });
+    const i = r.import;
+    alert(i.status === "skipped" ? "Licenses are already up to date." :
+      `${i.kept} licenses imported; ${i.registrations_matched} registrations and ${i.businesses_matched} businesses matched.`);
+    loadRegistrations();
+  } catch (err) { alert(err.message); } finally { e.target.disabled = false; e.target.textContent = "Update state contractor licenses"; }
+});
 $("#reg-import").addEventListener("click", async (e) => {
   e.target.disabled = true;
   try {
@@ -279,6 +296,7 @@ document.querySelectorAll(".tab").forEach((t) => t.addEventListener("click", () 
   if (t.dataset.view === "next" && (!current || current.status !== "new")) loadNext();
 }));
 $("#filter").addEventListener("change", loadPipeline);
+$("#grade-filter").addEventListener("change", loadPipeline);
 $("#customer").addEventListener("change", (e) => {
   customer = e.target.value;
   try { localStorage.setItem("customer", customer); } catch {}

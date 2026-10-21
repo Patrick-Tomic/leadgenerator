@@ -295,7 +295,60 @@ def m003_provenance_websites_registrations(c: sqlite3.Connection) -> None:
         c.execute("UPDATE leads SET website_state=? WHERE id=?", (state, lid))
 
 
-MIGRATIONS = [m001_customers_and_discovery, m002_evidence_scoring, m003_provenance_websites_registrations]
+def m004_state_licenses(c: sqlite3.Connection) -> None:
+    """Florida DBPR construction licenses (public records), matched to registrations and
+    businesses as operating evidence. Individuals' names and street addresses are not stored."""
+    _run(c, """
+        CREATE TABLE licenses (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            source TEXT NOT NULL,            -- dbpr_cilb
+            record_key TEXT NOT NULL,
+            occupation_code TEXT,
+            license_number TEXT,
+            business_name TEXT,              -- NULL when the licensee is an individual
+            dba_name TEXT,
+            norm_name TEXT,
+            norm_dba TEXT,
+            is_individual INTEGER NOT NULL DEFAULT 0,
+            address TEXT,                    -- business licensees only
+            city TEXT,
+            state TEXT,
+            zip TEXT,
+            primary_status TEXT,
+            secondary_status TEXT,
+            active INTEGER NOT NULL DEFAULT 0,
+            original_date TEXT,
+            effective_date TEXT,
+            expiration_date TEXT,
+            source_file TEXT,
+            first_seen_at TEXT NOT NULL,
+            last_seen_at TEXT NOT NULL,
+            UNIQUE (source, record_key)
+        );
+        CREATE INDEX idx_licenses_norm_name ON licenses (norm_name);
+        CREATE INDEX idx_licenses_norm_dba ON licenses (norm_dba);
+
+        ALTER TABLE registrations ADD COLUMN license_id INTEGER REFERENCES licenses(id);
+        ALTER TABLE registrations ADD COLUMN license_match_confidence TEXT;
+        ALTER TABLE registrations ADD COLUMN license_evidence JSON
+    """)
+
+
+def m005_priority(c: sqlite3.Connection) -> None:
+    """Website-check priority per business (home market first when discovery is statewide)."""
+    _run(c, """
+        ALTER TABLE leads ADD COLUMN priority INTEGER NOT NULL DEFAULT 1;
+        CREATE INDEX idx_leads_audit_queue ON leads (analyzed_at, priority)
+    """)
+    from .db import _priority
+    for lid, lat, lon in c.execute("SELECT id, lat, lon FROM leads").fetchall():
+        c.execute("UPDATE leads SET priority=? WHERE id=?", (_priority({"lat": lat, "lon": lon}), lid))
+    # Sunbiz is Florida's registry: a registration whose city isn't in AREA_CITIES is still in Florida.
+    c.execute("UPDATE registrations SET area='us-fl' WHERE area IS NULL")
+
+
+MIGRATIONS = [m001_customers_and_discovery, m002_evidence_scoring, m003_provenance_websites_registrations,
+              m004_state_licenses, m005_priority]
 LATEST = len(MIGRATIONS)
 
 
