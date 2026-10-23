@@ -13,6 +13,7 @@
     <button class="tab active" data-view="next">Next lead</button>
     <button class="tab" data-view="pipeline">Pipeline</button>
     <button class="tab" data-view="registrations">New registrations</button>
+    <button class="tab" data-view="noweb">No web presence</button>
   </nav>
   <select id="customer" title="Customer" hidden></select>
   <div id="status" class="status">Loading…</div>
@@ -49,6 +50,27 @@
     </table>
   </section>
 
+  <section id="view-noweb" hidden>
+    <div class="toolbar">
+      <select id="nw-industry"><option value="">All business types</option></select>
+      <select id="nw-area"><option value="">All areas</option></select>
+      <select id="nw-google">
+        <option value="any">Google: any</option>
+        <option value="not_found">No Google listing found</option>
+        <option value="unchecked">Google not checked yet</option>
+        <option value="found">Has a Google listing</option>
+      </select>
+      <label class="check"><input type="checkbox" id="nw-owner"> Has owner name</label>
+      <label class="check"><input type="checkbox" id="nw-email"> Has email</label>
+    </div>
+    <p class="muted" id="nw-help"></p>
+    <table id="nw-table">
+      <thead><tr><th>Business</th><th>Owner</th><th>Type</th><th>City</th><th>Phone</th><th>Email</th><th>Website</th><th>Google</th><th>Status</th><th></th></tr></thead>
+      <tbody></tbody>
+    </table>
+    <div class="toolbar pager"><button id="nw-prev" class="secondary">← Previous</button><span id="nw-count" class="muted"></span><button id="nw-next" class="secondary">Next →</button></div>
+  </section>
+
   <section id="view-registrations" hidden>
     <div class="toolbar">
       <label class="check"><input type="checkbox" id="reg-all"> Show all areas and industries</label>
@@ -64,7 +86,7 @@
   </section>
 </main>
 
-<footer>Business data © <a href="https://www.openstreetmap.org/copyright" target="_blank" rel="noopener">OpenStreetMap contributors</a> (ODbL). Website checks read public pages only and honor robots.txt.</footer>
+<footer>Business data © <a href="https://www.openstreetmap.org/copyright" target="_blank" rel="noopener">OpenStreetMap contributors</a> (ODbL). Website checks read public pages only and honor robots.txt.<span id="brave-credit" hidden> Web search results by <a href="https://search.brave.com/" target="_blank" rel="noopener">Brave Search</a>.</span></footer>
 
 <template id="lead-tpl">
   <article class="card">
@@ -95,6 +117,26 @@
       <ul class="source-list"></ul>
       <details class="raw-tags"><summary>All source tags</summary><pre></pre></details>
     </details>
+    <section class="email-panel">
+      <h3>Cold email</h3>
+      <div class="email-controls">
+        <select class="email-variant"></select>
+        <select class="email-subject"></select>
+      </div>
+      <div class="email-warnings"></div>
+      <textarea class="email-body" rows="19" spellcheck="true"></textarea>
+      <div class="email-actions">
+        <button class="secondary" data-copy="subject">Copy subject</button>
+        <button data-copy="body">Copy email</button>
+        <a class="button secondary email-open" target="_blank" rel="noopener" hidden>Open in email app</a>
+        <span class="muted email-status"></span>
+      </div>
+      <details class="sender-form">
+        <summary>Your name and company (used in the opening line; your own email signature follows "Thanks,")</summary>
+        <div class="sender-grid"></div>
+        <button class="secondary sender-save">Save sender details</button>
+      </details>
+    </section>
     <div class="brief" hidden><h3>AI brief</h3><div class="brief-body"></div></div>
     <label class="notes-label">Notes<textarea class="notes" rows="2" placeholder="Call notes, who you spoke with…"></textarea></label>
     <div class="actions">

@@ -118,7 +118,8 @@ def test_state_scope_uses_scan_area_not_overlapping_boxes():
     assert exclusion_reason({**lead, "lat": 27.95, "lon": -82.46}, county, {"pinellas"}) == "outside service areas"
 
 
-def test_tampa_bay_is_checked_first(tmpdb):
+def test_priority_areas_are_checked_first(tmpdb, monkeypatch):
+    monkeypatch.setattr(config, "PRIORITY_AREAS", ["hillsborough"])
     from test_v04 import osm
     far = osm(1, tags={"name": "Miami Grill", "phone": "3055550000", "website": "miami.example"}, lat=25.77, lon=-80.19)
     near = osm(2, tags={"name": "Tampa Grill", "phone": "8135550000", "website": "tampa.example"}, lat=27.95, lon=-82.46)
@@ -137,3 +138,22 @@ def test_registrations_in_scope_statewide(tmpdb):
     assert set(rows) == {"L1", "L2"} and rows["L1"]["area"] == "us-fl" and rows["L1"]["industry"] == "restaurant"
     county_only = registrations.list_registrations(state_profile(areas=["hillsborough"]), 10)
     assert [r["doc_number"] for r in county_only] == ["L2"]
+
+
+def test_no_priority_by_default_and_extracts_load_before_checks(tmpdb, no_real_extracts, monkeypatch):
+    from test_v04 import osm
+    assert config.PRIORITY_AREAS == []
+    db.upsert_business(osm(1, tags={"website": "a.example"}, lat=27.95, lon=-82.46))   # Tampa
+    db.refresh_priorities()
+    assert db.get_business(1)["priority"] == 1                                          # no Tampa bump
+    # With an unchecked business waiting, a due state extract still runs first.
+    db.sync_customer(state_profile(areas=["us-fl", "us-ga"], ready_pool_target=1, min_score=99))
+    monkeypatch.setattr(pipeline, "ADAPTERS", [])
+    checked = []
+    async def fake_analyze(limit):
+        checked.append(limit)
+        db.conn().execute("UPDATE leads SET analyzed_at='x', audit_version=99")
+        return 1
+    monkeypatch.setattr(pipeline, "analyze_pending", fake_analyze)
+    asyncio.run(pipeline.refill("atomic"))
+    assert no_real_extracts.calls == ["us-fl", "us-ga"] and checked                  # both states loaded, then checks

@@ -347,8 +347,79 @@ def m005_priority(c: sqlite3.Connection) -> None:
     c.execute("UPDATE registrations SET area='us-fl' WHERE area IS NULL")
 
 
+def m006_customer_settings(c: sqlite3.Connection) -> None:
+    """Per-customer settings edited in the app (e.g. email sender details). Kept apart from
+    the profile JSON, which is re-synced from profiles/*.json at startup."""
+    _run(c, """
+        CREATE TABLE customer_settings (
+            customer_id INTEGER NOT NULL REFERENCES customers(id),
+            key TEXT NOT NULL,
+            value JSON,
+            updated_at TEXT NOT NULL,
+            PRIMARY KEY (customer_id, key)
+        )
+    """)
+
+
+def m007_google_listing(c: sqlite3.Connection) -> None:
+    """Whether a Google listing was found for the business (1/0/NULL = not checked). Only the
+    outcome and the place ID are stored, never Google content."""
+    _run(c, """
+        ALTER TABLE leads ADD COLUMN google_listing INTEGER;
+        ALTER TABLE leads ADD COLUMN google_checked_at TEXT;
+        CREATE INDEX idx_leads_no_web ON leads (website, google_listing)
+    """)
+    c.execute("""UPDATE leads SET google_listing=1 WHERE id IN
+                 (SELECT lead_id FROM lead_sources WHERE source='google_places')""")
+
+
+def m008_indexes(c: sqlite3.Connection) -> None:
+    """Indexes for lookups by business across customers and for the website-check queue."""
+    _run(c, """
+        CREATE INDEX IF NOT EXISTS idx_customer_leads_lead ON customer_leads (lead_id);
+        CREATE INDEX IF NOT EXISTS idx_leads_audit_version ON leads (audit_version, analyzed_at)
+    """)
+
+
+def m009_people_and_emails(c: sqlite3.Connection) -> None:
+    """Owner/officer names from Sunbiz (names and titles only, never addresses) and emails
+    found for businesses, each with its source and match evidence."""
+    _run(c, """
+        CREATE TABLE business_people (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            lead_id INTEGER NOT NULL REFERENCES leads(id),
+            name TEXT NOT NULL,
+            title TEXT,
+            rank INTEGER NOT NULL DEFAULT 9,     -- 0 = owner/manager/president ... 9 = other officer
+            source TEXT NOT NULL,                -- sunbiz_cor | sunbiz_fic
+            source_record_id TEXT NOT NULL,      -- state document number
+            entity_name TEXT,                    -- the legal entity or DBA name that matched
+            match_confidence TEXT,
+            match_evidence JSON,
+            first_seen_at TEXT NOT NULL,
+            last_seen_at TEXT NOT NULL,
+            UNIQUE (lead_id, source, source_record_id, name)
+        );
+        CREATE INDEX idx_people_lead ON business_people (lead_id, rank);
+
+        CREATE TABLE business_emails (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            lead_id INTEGER NOT NULL REFERENCES leads(id),
+            email TEXT NOT NULL,
+            source TEXT NOT NULL,                -- search:tavily | website | osm | manual
+            source_url TEXT,
+            evidence TEXT,
+            confidence TEXT,                     -- high | medium
+            found_at TEXT NOT NULL,
+            UNIQUE (lead_id, email)
+        );
+        CREATE INDEX idx_emails_lead ON business_emails (lead_id)
+    """)
+
+
 MIGRATIONS = [m001_customers_and_discovery, m002_evidence_scoring, m003_provenance_websites_registrations,
-              m004_state_licenses, m005_priority]
+              m004_state_licenses, m005_priority, m006_customer_settings, m007_google_listing, m008_indexes,
+              m009_people_and_emails]
 LATEST = len(MIGRATIONS)
 
 

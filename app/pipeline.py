@@ -129,7 +129,7 @@ async def analyze_business(b: dict, fetcher: PoliteFetcher, finders: list | None
     """Customer-independent audit: verify which website (if any) is the business's,
     then audit that site. A missing website field in one source is never treated as
     'no website'; only checks that actually ran can say that."""
-    finders = get_finders() if finders is None else finders
+    finders = get_finders(background=True) if finders is None else finders
     v = await verify_website(b, fetcher, finders)
     state, best = v["state"], v["best"]
     findings: list[dict] = []
@@ -244,7 +244,7 @@ async def audit_and_qualify(b: dict, fetcher: PoliteFetcher) -> None:
 
 
 async def analyze_pending(limit: int) -> int:
-    pending = db.unanalyzed(limit)
+    pending = await asyncio.to_thread(db.unanalyzed, limit)
     if not pending:
         return 0
     fetcher = PoliteFetcher()
@@ -277,15 +277,25 @@ async def refill(customer_slug: str, force: bool = False) -> None:
             target = profile["ready_pool_target"]
             failures, rounds = 0, 0
             # Also keep going while older audits are waiting for a re-check with the current checks.
-            while ((force and rounds == 0) or db.counts(cust["id"], profile["min_score"])["ready"] < target
-                   or db.stale_audits() > 0):
+            # Database work runs in a worker thread so the web server's event loop never waits
+            # on it (a slow query here once kept the app from finishing startup).
+            async def needs_work() -> bool:
+                ready = (await asyncio.to_thread(db.counts, cust["id"], profile["min_score"]))["ready"]
+                return ready < target or await asyncio.to_thread(db.stale_audits) > 0
+
+            while (force and rounds == 0) or await needs_work():
                 rounds += 1
                 if rounds > 500:
                     break
-                if db.unanalyzed(1):
+                plan = await asyncio.to_thread(plan_scans, profile)
+                # Statewide extract scans run before website checks, so every state is loaded
+                # up front instead of waiting for tens of thousands of checks in the first one.
+                extract_due = [s for s in plan if s["mode"] == "extract"]
+                if extract_due:
+                    plan = extract_due
+                elif await asyncio.to_thread(db.unanalyzed, 1):
                     await analyze_pending(config.ANALYZE_BATCH)
                     continue
-                plan = plan_scans(profile)
                 if not plan:
                     _set("All scans for this profile are up to date; nothing new to discover yet.")
                     break

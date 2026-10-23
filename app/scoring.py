@@ -112,6 +112,9 @@ def score_lead(business: dict, findings: list[dict], profile: dict | None = None
 
     contact = contact_status(business, facts)
     mult = scoring["contact_mult"][contact]
+    # Lesser-known businesses are the better prospects: well-known ones score lower.
+    visibility = facts.get("visibility") or {"level": "unknown"}
+    mult *= scoring.get("visibility_mult", {}).get(visibility["level"], 1.0)
     raw = sum(x["points"] for x in main) + opt_total
     score = max(0, min(100, round(raw * mult)))
     t = scoring["grade_thresholds"]
@@ -138,6 +141,7 @@ def score_lead(business: dict, findings: list[dict], profile: dict | None = None
     opportunities.sort(key=lambda o: (TIER_ORDER[o["tier"]], -o["points"]))
 
     explanation = explain(scored, main, findings, profile, contact, score)
+    explanation["visibility"] = visibility
     return {"score": score, "grade": grade, "opportunities": opportunities, "explanation": explanation}
 
 

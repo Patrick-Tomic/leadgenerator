@@ -27,6 +27,7 @@ async function loadCustomers() {
 
 async function refreshStatus() {
   status = await api("/api/status");
+  $("#brave-credit").hidden = !status.brave_attribution;
   const p = status.pipeline;
   $("#status").innerHTML =
     `<span class="dot ${p.running ? "busy" : ""}"></span>${status.ready} leads ready · ${status.analyzed}/${status.discovered} analyzed` +
@@ -81,6 +82,9 @@ function renderLead(lead) {
     lead.email && `<li><span class="label">Email</span><a href="mailto:${esc(lead.email)}">${esc(lead.email)}</a></li>`,
     `<li><span class="label">Website <button class="link-btn" data-act="website">${site ? "Edit" : "Add"}</button></span>${site ? `<a href="${esc(/^https?:/.test(site) ? site : "http://" + site)}" target="_blank" rel="noopener">${esc(site)}</a><br>` : ""}<span class="chip ws-${esc(lead.website_state || "unknown")}">${esc(lead.website_state_label || "Website status unknown")}</span></li>`,
     lead.address && `<li><span class="label">Address</span>${mapUrl ? `<a href="${mapUrl}" target="_blank" rel="noopener">${esc(lead.address)}</a>` : esc(lead.address)}</li>`,
+    ownersItem(lead),
+    visibilityItem(lead),
+    reviewsItem(lead),
     `<li><span class="label">Verify</span><a href="${googleUrl}" target="_blank" rel="noopener">Search Google</a>${lead.source_url ? ` · <a href="${esc(lead.source_url)}" target="_blank" rel="noopener">OSM listing</a>` : ""}</li>`,
   ].filter(Boolean).join("");
 
@@ -118,6 +122,7 @@ function renderLead(lead) {
     (unchecked.length ? `<details open><summary>Couldn't check / not tested (${unchecked.length})</summary>${group(unchecked)}</details>` : "") +
     (optional.length ? `<details><summary>Optional features, low priority (${optional.length})</summary><p class="muted">Absent nice-to-haves. Not evidence of a problem on their own.</p>${group(optional)}</details>` : "");
   renderDetails(node, lead);
+  setupEmail(node, lead);
   $(".notes", node).value = lead.notes || "";
 
   if (lead.ai_brief) { $(".brief", node).hidden = false; $(".brief-body", node).innerHTML = md(lead.ai_brief); }
@@ -130,6 +135,30 @@ function renderLead(lead) {
   $("#lead .actions").addEventListener("click", onAction);
   $("#lead .contact").addEventListener("click", onAction);
   window.scrollTo(0, 0);
+}
+
+function ownersItem(lead) {
+  const o = lead.owners || [];
+  if (!o.length) return "";
+  return `<li><span class="label">Owner / officers <span class="muted">(Florida Sunbiz)</span></span>${o.slice(0, 3).map((p) =>
+    `<div>${esc(p.name)} <span class="muted">${esc(p.title)}${{ medium: " · matched by name + ZIP", low: " · matched by name + city: verify" }[p.match_confidence] || ""}</span></div>`).join("")}</li>`;
+}
+
+function visibilityItem(lead) {
+  const v = (lead.explanation || {}).visibility;
+  if (!v) return "";
+  return `<li><span class="label">How well known <span class="muted">(estimate)</span></span>
+    <span class="chip vis-${esc(v.level)}">${esc(v.label)}</span>
+    ${v.reasons.length ? `<div class="muted">${esc(v.reasons.join("; "))}</div>` : ""}</li>`;
+}
+
+function reviewsItem(lead) {
+  const r = lead.google_reviews;
+  if (r && r.found) return `<li><span class="label">Google reviews</span>${r.count} review${r.count === 1 ? "" : "s"}${r.rating ? `, ${r.rating}★` : ""}
+    · <a href="${esc(r.maps_url)}" target="_blank" rel="noopener">view on Google Maps</a><div class="muted">Data from Google</div></li>`;
+  if (r) return `<li><span class="label">Google reviews</span><span class="muted">${esc(r.note)}</span></li>`;
+  if (lead.google_reviews_enabled) return `<li><span class="label">Google reviews</span><button class="link-btn" data-act="reviews">Check Google reviews</button></li>`;
+  return `<li><span class="label">Google reviews</span><span class="muted">Add a Google Places key to check</span></li>`;
 }
 
 const SRC_CHIP = (s) => `<span class="chip src">${esc(s)}</span>`;
@@ -160,6 +189,93 @@ function renderDetails(node, lead) {
   else $(".raw-tags", node).hidden = true;
 }
 
+const SENDER_LABELS = { name: "Your name", company: "Company" };
+
+function setupEmail(node, lead) {
+  const panel = $(".email-panel", node);
+  const state = { variant: "short", draft: null };
+  const load = async () => {
+    const d = await api(`/api/leads/${lead.id}/email?variant=${state.variant}`);
+    state.draft = d;
+    $(".email-variant", panel).innerHTML = Object.entries(d.variants).map(([k, v]) =>
+      `<option value="${k}"${k === d.variant ? " selected" : ""}>${esc(v)}</option>`).join("");
+    $(".email-subject", panel).innerHTML = d.subjects.map((s) => `<option>${esc(s)}</option>`).join("");
+    $(".email-body", panel).value = d.body;
+    $(".email-warnings", panel).innerHTML = [...d.warnings.map((w) => `<p class="warn">⚠ ${esc(w)}</p>`),
+      ...d.verify.map((v) => `<p class="muted">${esc(v)}</p>`),
+      d.based_on ? `<p class="muted">Based on: ${esc(d.based_on)}</p>` : ""].join("");
+    updateMailto();
+  };
+  const updateMailto = () => {
+    const a = $(".email-open", panel);
+    if (!lead.email) { a.hidden = true; return; }
+    a.hidden = false;
+    a.href = `mailto:${lead.email}?subject=${encodeURIComponent($(".email-subject", panel).value)}&body=${encodeURIComponent($(".email-body", panel).value)}`;
+  };
+  const copy = async (text, what) => {
+    try { await navigator.clipboard.writeText(text); }
+    catch { const t = document.createElement("textarea"); t.value = text; document.body.append(t); t.select(); document.execCommand("copy"); t.remove(); }
+    $(".email-status", panel).textContent = `${what} copied`;
+    setTimeout(() => ($(".email-status", panel).textContent = ""), 2000);
+  };
+  panel.addEventListener("change", (e) => {
+    if (e.target.matches(".email-variant")) { state.variant = e.target.value; load(); }
+    if (e.target.matches(".email-subject")) updateMailto();
+  });
+  panel.addEventListener("input", (e) => { if (e.target.matches(".email-body")) updateMailto(); });
+  panel.addEventListener("click", async (e) => {
+    const b = e.target.closest("[data-copy]");
+    if (b) copy(b.dataset.copy === "subject" ? $(".email-subject", panel).value
+                : `Subject: ${$(".email-subject", panel).value}\n\n${$(".email-body", panel).value}`, b.dataset.copy === "subject" ? "Subject" : "Email");
+    if (e.target.matches(".sender-save")) {
+      const body = Object.fromEntries([...panel.querySelectorAll(".sender-grid input")].map((i) => [i.name, i.value]));
+      await api("/api/settings/sender", { method: "POST", body: JSON.stringify(body) });
+      $(".sender-form", panel).open = false;
+      load();
+    }
+  });
+  $(".sender-form", panel).addEventListener("toggle", async (e) => {
+    if (!e.target.open || $(".sender-grid", panel).children.length) return;
+    const s = await api("/api/settings/sender");
+    $(".sender-grid", panel).innerHTML = Object.entries(SENDER_LABELS).map(([k, label]) =>
+      `<label>${esc(label)}<input name="${k}" value="${esc(s[k] || "")}"></label>`).join("");
+  });
+  load().catch((err) => ($(".email-warnings", panel).textContent = err.message));
+}
+
+let nwOffset = 0;
+async function loadNoWeb() {
+  const q = new URLSearchParams({ industry: $("#nw-industry").value, area: $("#nw-area").value, google: $("#nw-google").value,
+    offset: nwOffset, has_owner: $("#nw-owner").checked, has_email: $("#nw-email").checked });
+  const d = await api(`/api/no-web?${q}`);
+  if ($("#nw-industry").options.length === 1) {
+    $("#nw-industry").innerHTML += Object.entries(d.industries).map(([k, v]) => `<option value="${k}">${esc(v)}</option>`).join("");
+    $("#nw-area").innerHTML += Object.entries(d.areas).map(([k, v]) => `<option value="${k}">${esc(v)}</option>`).join("");
+  }
+  $("#nw-help").textContent = "Businesses where no source lists a website. Unless a website search ran, that's from map listings only, so check before assuming they have none. "
+    + (d.search_enabled ? "Find website runs a capped web search (Brave Search). " : "")
+    + (d.google_enabled ? "Check Google uses one Google Places lookup (free up to the monthly cap)." : "Add a Google Places key to check whether they have a Google listing.")
+    + " Businesses with a phone number are listed first.";
+  $("#nw-table tbody").innerHTML = d.rows.map((r) => `
+    <tr><td>${esc(r.name)}${Object.keys(r.social).length ? `<div class="muted">${Object.entries(r.social).map(([k, u]) => `<a href="${esc(u.startsWith("http") ? u : "https://" + u)}" target="_blank" rel="noopener">${esc(k)}</a>`).join(" · ")}</div>` : ""}</td>
+      <td>${r.owners.length ? r.owners.map((o) => `<div>${esc(o.name)} <span class="muted">${esc(o.title)}${o.confidence === "low" ? " · verify" : ""}</span></div>`).join("") : `<span class="muted">—</span>`}</td>
+      <td>${esc(r.industry_label)}</td><td>${esc(r.city || "")}</td>
+      <td>${r.phone ? `<a href="tel:${esc(r.phone)}">${esc(r.phone)}</a>` : `<span class="muted">—</span>`}</td>
+      <td class="nw-email-cell">${r.emails.length ? r.emails.map((e) => `<div><a href="mailto:${esc(e.email)}">${esc(e.email)}</a>
+          <div class="muted">${esc(e.evidence)}${e.confidence !== "high" ? " · verify" : ""}</div></div>`).join("")
+        : (d.email_search_enabled ? `<button class="link-btn" data-find-email="${r.id}">Find email</button>` : `<span class="muted">—</span>`)}</td>
+      <td><span class="chip">${esc(r.website_label)}</span>
+        ${d.search_enabled && r.website_state !== "none_found" ? `<button class="link-btn" data-search="${r.id}">Find website</button>` : ""}</td>
+      <td><span class="chip ${r.google_listing === 0 ? "conf-verified" : ""}">${esc(r.google_label)}</span>
+        ${d.google_enabled && r.google_listing === null ? `<button class="link-btn" data-google="${r.id}">Check Google</button>` : ""}</td>
+      <td>${esc((r.status || "not opened").replace("_", " "))}</td>
+      <td><button class="link-btn" data-open-nw="${r.id}">Open</button></td></tr>`).join("")
+    || `<tr><td colspan="10">No businesses match these filters yet.</td></tr>`;
+  $("#nw-count").textContent = d.total ? `${d.offset + 1}–${d.offset + d.rows.length} of ${d.total.toLocaleString()}` : "";
+  $("#nw-prev").disabled = d.offset === 0;
+  $("#nw-next").disabled = d.offset + d.rows.length >= d.total;
+}
+
 async function loadRegistrations() {
   const data = await api(`/api/registrations${$("#reg-all").checked ? "?all=true" : ""}`);
   $("#reg-help").textContent = `Download Sunbiz daily files (doc/cor/yyyymmddc.txt, doc/fic/yyyymmddf.txt) from the official public SFTP into ${data.import_dir}, then import. Registrations are legal entities, not confirmed operating businesses; addresses are as filed.`;
@@ -186,6 +302,9 @@ async function onAction(e) {
     if (act === "brief") {
       btn.textContent = "Writing…";
       renderLead(await api(`/api/leads/${current.id}/brief`, { method: "POST" }));
+    } else if (act === "reviews") {
+      btn.textContent = "Checking…";
+      renderLead(await api(`/api/leads/${current.id}/reviews`, { method: "POST" }));
     } else if (act === "phone") {
       const phone = prompt("Business phone number (10 digits):", current.phone || "");
       if (!phone || !phone.trim()) { btn.disabled = false; return; }
@@ -245,11 +364,47 @@ function show(view) {
   $("#view-next").hidden = view !== "next";
   $("#view-pipeline").hidden = view !== "pipeline";
   $("#view-registrations").hidden = view !== "registrations";
+  $("#view-noweb").hidden = view !== "noweb";
+  if (view === "noweb") { nwOffset = 0; loadNoWeb().catch((e) => alert(e.message)); }
   if (view === "pipeline") loadPipeline();
   if (view === "registrations") loadRegistrations().catch((e) => alert(e.message));
 }
 
 $("#reg-all").addEventListener("change", () => loadRegistrations());
+["#nw-industry", "#nw-area", "#nw-google", "#nw-owner", "#nw-email"].forEach((id) => $(id).addEventListener("change", () => { nwOffset = 0; loadNoWeb(); }));
+$("#nw-prev").addEventListener("click", () => { nwOffset = Math.max(0, nwOffset - 100); loadNoWeb(); });
+$("#nw-next").addEventListener("click", () => { nwOffset += 100; loadNoWeb(); });
+$("#nw-table tbody").addEventListener("click", async (e) => {
+  const g = e.target.closest("[data-google]"), o = e.target.closest("[data-open-nw]"), f = e.target.closest("[data-search]");
+  const fe = e.target.closest("[data-find-email]");
+  try {
+    if (fe) {
+      fe.disabled = true; fe.textContent = "Searching…";
+      const r = await api(`/api/no-web/${fe.dataset.findEmail}/email`, { method: "POST" });
+      fe.closest("td").innerHTML = r.emails.length ? r.emails.map((m) => `<div><a href="mailto:${esc(m.email)}">${esc(m.email)}</a>
+          <div class="muted">${esc(m.evidence)}${m.confidence !== "high" ? " · verify" : ""}</div></div>`).join("")
+        : `<span class="muted">${esc(r.message)}</span>`;
+    }
+    if (f) {
+      f.disabled = true; f.textContent = "Searching…";
+      const r = await api(`/api/no-web/${f.dataset.search}/search`, { method: "POST" });
+      f.closest("td").innerHTML = `<span class="chip">${esc(r.label)}</span>`
+        + (r.website ? ` <a href="${esc(r.website)}" target="_blank" rel="noopener">${esc(r.website)}</a>` : "")
+        + (r.detail ? `<div class="muted">${esc(r.detail)}</div>` : "");
+    }
+    if (g) {
+      g.disabled = true; g.textContent = "Checking…";
+      const r = await api(`/api/no-web/${g.dataset.google}/google`, { method: "POST" });
+      g.closest("td").innerHTML = `<span class="chip ${r.found ? "" : "conf-verified"}">${esc(r.google_label)}</span>`
+        + (r.found && r.maps_url ? ` <a href="${esc(r.maps_url)}" target="_blank" rel="noopener">view</a>` : "");
+    }
+    if (o) {
+      o.disabled = true; o.textContent = "Opening…";
+      const lead = await api(`/api/no-web/${o.dataset.openNw}/open`, { method: "POST" });
+      show("next"); renderLead(lead);
+    }
+  } catch (err) { alert(err.message); loadNoWeb(); }
+});
 $("#lic-update").addEventListener("click", async (e) => {
   e.target.disabled = true; e.target.textContent = "Updating (about 1 minute)…";
   try {

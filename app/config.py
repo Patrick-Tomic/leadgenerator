@@ -29,9 +29,23 @@ SCAN_RETRY_MINUTES = float(os.getenv("SCAN_RETRY_MINUTES", "30"))
 # Stop a refill after this many consecutive failed scans (source is probably down).
 MAX_CONSECUTIVE_SCAN_FAILURES = int(os.getenv("MAX_CONSECUTIVE_SCAN_FAILURES", "3"))
 
-# Optional: Brave Search API key (free tier) used to find websites for businesses
-# that OSM lists without one. Without it, "no website" findings stay low-confidence.
+# Optional: Brave Search API key, used to find websites for businesses that no source
+# lists one for. Brave has no free plan since Feb 2026: about $5 of monthly credit
+# (~1,000 searches) with a card on file, and usage beyond that is billed with no cap.
+# So searches are capped per month here, and run only when you ask (Find website /
+# Re-check site) unless WEBSITE_SEARCH_AUTO is turned on.
 BRAVE_API_KEY = os.getenv("BRAVE_API_KEY", "")
+# Free alternative: Tavily web search, 1,000 basic searches/month, no card required.
+TAVILY_API_KEY = os.getenv("TAVILY_API_KEY", "")
+TAVILY_MONTHLY_LIMIT = int(os.getenv("TAVILY_MONTHLY_LIMIT", "950"))
+# Free, keyless: try web addresses made from the business name (e.g. joesgrill.com) and
+# keep one only if its pages show the business's phone or name + street address.
+DOMAIN_GUESS = os.getenv("DOMAIN_GUESS", "true").lower() not in ("0", "false", "no")
+BRAVE_MONTHLY_LIMIT = int(os.getenv("BRAVE_MONTHLY_LIMIT", "900"))
+# Let background website checks use Brave/Google Places on every business with no listed
+# website. Off by default: with tens of thousands of such businesses it would use up the
+# monthly caps within hours.
+WEBSITE_SEARCH_AUTO = os.getenv("WEBSITE_SEARCH_AUTO", "").lower() in ("1", "true", "yes")
 
 # Optional, paid: Google Places API (New) Text Search, used only to find website
 # candidates for businesses whose own records list none. Off unless a key is set.
@@ -98,8 +112,9 @@ OSM_EXTRACT_DIR = Path(os.getenv("OSM_EXTRACT_DIR", BASE_DIR / "data" / "osm"))
 EXTRACT_REFRESH_DAYS = int(os.getenv("EXTRACT_REFRESH_DAYS", "30"))
 # A business name appearing at this many locations in one state is treated as a chain.
 CHAIN_MIN_LOCATIONS = int(os.getenv("CHAIN_MIN_LOCATIONS", "5"))
-# Businesses inside these areas are website-checked first.
-PRIORITY_AREAS = [a for a in os.getenv("PRIORITY_AREAS", "hillsborough,pinellas,pasco,manatee").split(",") if a]
+# Businesses inside these areas are website-checked first (e.g. "hillsborough,pinellas").
+# Empty by default: checks are spread evenly across every searched area.
+PRIORITY_AREAS = [a for a in os.getenv("PRIORITY_AREAS", "").split(",") if a]
 
 
 def area_ancestors(area: str | None) -> set[str]:

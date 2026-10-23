@@ -29,6 +29,9 @@ class WebsiteFinder(ABC):
     name: str
     # False: only consulted when the business's own records list no usable website.
     always: bool = False
+    # True: an empty result is evidence of "no website" (a real web search). False for
+    # heuristics like guessing domains, where finding nothing proves nothing.
+    conclusive: bool = True
 
     @abstractmethod
     async def find_candidates(self, profile: dict) -> dict:

@@ -23,6 +23,8 @@ DEFAULT_SCORING = {
     # Per-finding base points that replace the tier points (before confidence/actionability).
     "point_overrides": {},
     "grade_thresholds": {"A": 60, "B": 40, "C": 20},
+    # Multiplier by how well known the business is (app/visibility.py estimate).
+    "visibility_mult": {"low": 1.0, "medium": 0.85, "high": 0.5, "unknown": 1.0},
 }
 # v0.2 profiles used high/medium/low confidence keys; they map onto the new names.
 _LEGACY_CONFIDENCE = {"high": "verified", "medium": "probable", "low": "unverified"}
@@ -35,7 +37,7 @@ def _scoring(raw: dict) -> dict:
     if any(k in conf for k in _LEGACY_CONFIDENCE):
         out["confidence_mult"] = {**DEFAULT_SCORING["confidence_mult"],
                                   **{_LEGACY_CONFIDENCE.get(k, k): v for k, v in conf.items()}}
-    for key in ("tier_points", "confidence_mult", "contact_mult", "grade_thresholds"):
+    for key in ("tier_points", "confidence_mult", "contact_mult", "grade_thresholds", "visibility_mult"):
         out[key] = {**DEFAULT_SCORING[key], **out[key]}
     return out
 
@@ -68,6 +70,8 @@ def validate(raw: dict) -> dict:
     p.setdefault("region_label", config.REGION_LABEL)
     p.setdefault("active", True)
     p.setdefault("min_score", 1)
+    # With a Google Places key: skip leads with more Google reviews than this (None = don't check).
+    p.setdefault("max_google_reviews", 50)
     p.setdefault("ready_pool_target", config.READY_POOL_TARGET)
     return p
 

@@ -19,6 +19,8 @@ DIRECTORY_DOMAINS = {
     "youtube.com", "tiktok.com", "porch.com", "birdeye.com", "superpages.com", "dandb.com", "zoominfo.com",
     "carfax.com", "repairpal.com", "mechanicadvisor.com", "networx.com", "buildzoom.com", "alignable.com",
     "local.com", "cylex.us.com", "brownbook.net", "hotfrog.com", "n49.com", "loc8nearme.com", "wikipedia.org",
+    "indeed.com", "glassdoor.com", "ziprecruiter.com", "myfloridalicense.com", "dnb.com", "bizjournals.com",
+    "facebook.com", "nextdoor.com", "mapquest.com", "yellowpages.com", "fyple.com", "allbiz.com", "ccsearch.com",
 }
 STOPWORDS = {"the", "and", "of", "inc", "llc", "co", "company", "corp", "services", "service", "fl", "florida", "tampa"}
 
@@ -48,6 +50,12 @@ class BraveWebsiteFinder(WebsiteFinder):
         self.transport, self.min_interval = transport, min_interval
 
     async def _search(self, query: str) -> list[str]:
+        from datetime import datetime, timezone
+        from .. import db
+        period = datetime.now(timezone.utc).strftime("%Y-%m")
+        if db.api_calls(self.name, period) >= config.BRAVE_MONTHLY_LIMIT:
+            raise SourceError(f"Brave monthly search limit reached ({config.BRAVE_MONTHLY_LIMIT}); not searching")
+        db.count_api_call(self.name, period)  # count before sending: a sent request may be billed
         async with self._lock:
             try:
                 async with httpx.AsyncClient(timeout=20, transport=self.transport) as client:
@@ -86,12 +94,66 @@ class BraveWebsiteFinder(WebsiteFinder):
         return {"candidates": candidates[:5], "queries": queries, "checked": checked, "directories": sorted(directories)}
 
 
-def get_finders() -> list[WebsiteFinder]:
-    """Configured website finders, cheapest first. Paid sources are off unless a key is set."""
+def get_finders(background: bool = False) -> list[WebsiteFinder]:
+    """Configured website finders. Paid sources are off unless a key is set, and background
+    checks only use them when WEBSITE_SEARCH_AUTO is on (on-demand checks always may)."""
+    from .domain_guess import DomainGuessFinder
     from .places import GooglePlacesFinder
-    finders: list[WebsiteFinder] = []
+    # Free and keyless: guessing addresses from the name always runs (unless turned off).
+    finders: list[WebsiteFinder] = [DomainGuessFinder()] if config.DOMAIN_GUESS else []
+    if background and not config.WEBSITE_SEARCH_AUTO:
+        return finders
+    if config.TAVILY_API_KEY:
+        finders.append(TavilyWebsiteFinder())
     if config.BRAVE_API_KEY:
         finders.append(BraveWebsiteFinder())
     if config.GOOGLE_PLACES_API_KEY:
         finders.append(GooglePlacesFinder())
     return finders
+
+
+class TavilyWebsiteFinder(WebsiteFinder):
+    """Free web search (Tavily): 1,000 basic searches a month, no card required. One search
+    per business (name + city + phone), capped by TAVILY_MONTHLY_LIMIT. Like Brave, it only
+    proposes candidates; identity is decided from each candidate page."""
+
+    name = "search:tavily"
+
+    def __init__(self, transport: httpx.AsyncBaseTransport | None = None) -> None:
+        self.transport = transport
+
+    async def find_candidates(self, profile: dict) -> dict:
+        from datetime import datetime, timezone
+        from .. import db
+        period = datetime.now(timezone.utc).strftime("%Y-%m")
+        if db.api_calls(self.name, period) >= config.TAVILY_MONTHLY_LIMIT:
+            raise SourceError(f"Tavily monthly search limit reached ({config.TAVILY_MONTHLY_LIMIT}); not searching")
+        parts = [f'"{profile["name"]}"', profile.get("city") or "", "FL" if not profile.get("city") else ""]
+        if profile["phones"]:
+            parts.append(_fmt_phone(profile["phones"][0]))
+        query = " ".join(p for p in parts if p)
+        db.count_api_call(self.name, period)
+        try:
+            async with httpx.AsyncClient(timeout=30, transport=self.transport) as client:
+                resp = await client.post("https://api.tavily.com/search",
+                                         headers={"Authorization": f"Bearer {config.TAVILY_API_KEY}"},
+                                         json={"query": query, "search_depth": "basic", "max_results": 10})
+        except httpx.HTTPError as e:
+            raise SourceError(f"Tavily search failed: {type(e).__name__}") from e
+        if resp.status_code in (432, 433):
+            raise SourceError("Tavily plan limit reached for this month")
+        if resp.status_code != 200:
+            raise SourceError(f"Tavily search returned HTTP {resp.status_code}")
+        urls = [r["url"] for r in resp.json().get("results", []) if r.get("url")]
+        candidates, directories, seen = [], set(), set()
+        for rank, url in enumerate(urls, 1):
+            host = _registrable(urlparse(url).netloc)
+            if host in DIRECTORY_DOMAINS:
+                directories.add(host)
+                continue
+            if not host or host in seen:
+                continue
+            seen.add(host)
+            candidates.append({"url": f"{urlparse(url).scheme}://{urlparse(url).netloc}/", "source": self.name,
+                               "evidence": [f"search result #{rank} for {query}"]})
+        return {"candidates": candidates[:5], "queries": [query], "checked": urls, "directories": sorted(directories)}

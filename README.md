@@ -15,7 +15,9 @@ Optional settings go in a `.env` file (see `.env.example`):
 | Variable | What it enables |
 |---|---|
 | `LEAD_ENGINE_CONTACT` | Your URL or email in the crawler's User-Agent, so site owners can reach you. Recommended. |
-| `BRAVE_API_KEY` | Web search (free tier) for website candidates when a business's own records list none. Searches by name + city and by phone. Without any search source, those businesses stay *website status unknown* and are never pitched a website. |
+| `TAVILY_API_KEY` | **Free, no card:** web search for websites when no source lists one (1,000 searches/month; sign up at app.tavily.com). One search per business (name + city + phone), when you click **Find website** or **Re-check site**. Capped at `TAVILY_MONTHLY_LIMIT` (950). |
+| `DOMAIN_GUESS` | On by default, free, no key: tries addresses made from the business name (e.g. `joesgrill.com`, `joesgrilltampa.com`) during normal website checks. A guessed site is kept **only** if its page shows the business's phone number or name + street address. Finding nothing never counts as "no website". |
+| `BRAVE_API_KEY` | Web search for websites when no source lists one (by name + city, and by phone). **Not free since Feb 2026:** ~$5/month of credit (~1,000 searches), card required, overage billed with no cap. The app stops at `BRAVE_MONTHLY_LIMIT` (900/month) and only searches when you click **Find website** or **Re-check site**, unless `WEBSITE_SEARCH_AUTO=true`. Brave's credit reportedly requires crediting Brave Search, which the app's footer does while a key is set. |
 | `GOOGLE_PLACES_API_KEY` | **Paid, off by default.** Google Places (New) Text Search as a second website finder. Capped by `GOOGLE_PLACES_MONTHLY_LIMIT` (default 900 calls/month, under the 1,000 free Enterprise calls). See [costs](#rate-limits-limitations-and-costs). |
 | `SUNBIZ_IMPORT_DIR` | Where you put downloaded Florida Sunbiz data files (default `data/sunbiz`). See [Florida registrations](#florida-registrations-sunbiz). |
 | `ANTHROPIC_API_KEY` | A **Write AI brief** button: Claude (`claude-opus-5-5`) drafts talking points and a first outreach email from the collected evidence. It runs only when you click it. The request opts in to server-side refusal fallbacks. |
@@ -153,9 +155,9 @@ v2 adds a score explanation per customer lead, the audit version per business, a
 | Website audits | ≥2 s between requests to the same host, ≤4 sites at once, 3 MB page cap, robots.txt honored. Up to ~12 requests per site (homepage, retry, contact page, 8 links, sitemap); measured ~70 s for 8 sites at 4 in parallel. |
 | What the audit can't see | Content rendered by JavaScript (findings that depend on it are downgraded to *unverified*), form behavior (forms are never submitted), pages beyond the homepage, contact page and 8 links, and anything behind bot protection. |
 | Google Places | Off unless `GOOGLE_PLACES_API_KEY` is set. Only called when a business's own records list no usable website. Every call is counted per month and stopped at `GOOGLE_PLACES_MONTHLY_LIMIT` (900). |
-| Brave Search | Up to 2 queries per business without a listed website (name + city, phone), 1 query/second. |
+| Brave Search | Up to 2 queries per business searched (name + city, phone), 1 query/second, capped at `BRAVE_MONTHLY_LIMIT` (900). On demand only unless `WEBSITE_SEARCH_AUTO=true`. |
 
-**Operating cost: $0.** OSM and Overpass are free. Brave Search's free tier is optional. Claude is optional and per-click (roughly a few cents per brief at current Opus pricing). SQLite and a local process need no hosting. The only real constraint is the shared public Overpass instance; heavy multi-customer use should move to a self-hosted Overpass or a paid mirror (set `OVERPASS_URL`).
+**Operating cost: $0.** OSM and Overpass are free. Brave Search is optional and capped inside its ~$5 monthly credit. Claude is optional and per-click (roughly a few cents per brief at current Opus pricing). SQLite and a local process need no hosting. The only real constraint is the shared public Overpass instance; heavy multi-customer use should move to a self-hosted Overpass or a paid mirror (set `OVERPASS_URL`).
 
 ## Data sources evaluated
 
@@ -163,7 +165,7 @@ v2 adds a score explanation per customer lead, the audit version per business, a
 |---|---|---|---|---|
 | **OpenStreetMap via Geofabrik state extracts** | Free (FL 628 MB, GA 341 MB, NC 410 MB, SC 157 MB; whole US 11.4 GB) | All mapped businesses in a state | ODbL, same as Overpass; built for bulk download | **Used, primary for states.** |
 | **OpenStreetMap via Overpass** | Free | Moderate for trades: good on auto repair and HVAC, patchy on home-based businesses. Often includes phone, website, and address. | ODbL: commercial use OK with attribution (shown in the footer). Fair use of public instances. | **Used for county-level profiles.** Not for statewide or high-volume work. |
-| **Brave Search API** | Free tier ~2k queries/month, 1 q/s; paid after | Web-wide | Results may be used in apps per their API terms | **Used, optional**, to confirm or find official websites |
+| **Brave Search API** | ~$5/month credit (~1,000 searches) since Feb 2026, card required, overage billed | Web-wide | Results may be used in apps per their API terms | **Used, optional**, to confirm or find official websites |
 | Official business websites | Free | Per business | Public pages only; robots.txt honored; no logins, form submissions, or CAPTCHA bypass | **Used** for analysis |
 | Google Places API (New) | Text Search with website/phone fields bills at the Enterprise SKU: 1,000 free calls/month, then about $35 per 1,000 (Google pricing page, Oct 2026) | Best coverage | Place IDs may be stored indefinitely; other content has caching restrictions | **Implemented, optional, off by default.** Website finder only; tested against representative responses, not the live API (no key available). |
 | Yelp Fusion API | Limited free trial, now mostly paid | Good for consumer-facing businesses | Display and caching restrictions; no bulk storage | Not used |
@@ -215,6 +217,42 @@ The Department of Business and Professional Regulation publishes its constructio
 - **Privacy:** for individual licensees ("LAST, FIRST") only the business/DBA name, city, ZIP and license are kept, never the person's name or street address. Officer rows are skipped.
 - **Status codes aren't documented** on the download page. A license counts as active when its primary status is `C` and its secondary status isn't `I`. Records that disappear from a later weekly file are marked inactive.
 - **No phone numbers:** the licensee file doesn't include them.
+
+## Favoring lesser-known businesses
+
+Each lead gets a **"How well known" estimate** (free, always on), shown with its reasons:
+- **Points to well known:** a Wikipedia/Wikidata entry, a review widget on the site (Birdeye, Podium, Trustindex…), 3+ social profiles, a large site, a state license held for 10+ years.
+- **Points to not well known:** registered or licensed within the last year, no or a small website, no social profiles.
+- **Effect on the score:** *Somewhat known* ×0.85, *Well known* ×0.5. Not-well-known and *Not enough information* keep their full score. Set this per profile with `scoring.visibility_mult`.
+
+It's an estimate, not a review count. **Real Google review counts** are optional:
+- **Turning it on:** set `GOOGLE_PLACES_API_KEY`. It needs a Google Cloud account with billing enabled.
+- **What gets checked:** only leads about to be shown in *Next lead*. Leads with more than `max_google_reviews` (default 50, in the profile) are skipped, and *Check Google reviews* on a lead checks it on demand.
+- **Cost:** calls share the `GOOGLE_PLACES_MONTHLY_LIMIT` cap (900/month, under Google's 1,000 free calls).
+- **Storage:** only the place ID is stored. Counts and ratings stay in memory for 24 hours (Google's terms restrict caching other Places content) and are labeled "Data from Google".
+- **Matching:** a Google listing is used only on a confident match (same phone, or same name at the same location), never on name alone.
+
+## Cold emails
+
+Each lead page has a **Cold email** panel (free, no AI). The email **hints at the problem without the specifics** (e.g. "a security setting that causes browsers to flag your site"), so the details give the prospect a reason to get on a call. The full specifics are shown to you as "Specifics to share on the call". Only verified or probable problems are hinted at; probable ones read "what looks like…". The email ends with the opt-out line and "Thanks,", and your own email signature follows when you send. Keep a postal address in that signature: CAN-SPAM requires one in commercial email.
+
+## Owner names (Florida Sunbiz)
+
+Owner and officer **names and titles** are matched to known businesses from Sunbiz's data files:
+- the quarterly full files `doc/Quarterly/Cor/cordata.zip` (every active company, up to 6 officers each) and `doc/Quarterly/Fic/ficdata.zip` (every active DBA, with its owners);
+- the daily files you already download.
+
+Put them under `data/sunbiz/` and run `.venv/bin/python -m app.cli owners-import data/sunbiz`. Re-running skips file versions already imported. `cordata.zip` uses Deflate64 compression (about 18 GB uncompressed), so it's streamed through the system `unzip` program, never extracted to disk.
+
+- **Matching:** same normalized name plus same street (*high*), same ZIP (*medium*), or same city (*low*; only distinctive names of 13+ characters, and only when one business with that name is in that city). Low matches are labeled "verify".
+- **Emails** greet the owner by first name ("Hi John,") only on high or medium matches, with a reminder to check they're still involved.
+- **Privacy:** only person names and titles are stored. Officer, owner and registered-agent addresses, and company-type officers, are never stored.
+
+## Emails for businesses without a website
+
+**Find email** on the *No web presence* tab runs one Tavily search (free tier, same monthly cap) and reads only the snippets Tavily returns; Facebook, Yelp and other directories are never fetched by the app. An email is kept only if the same snippet names the business **and** shows its phone (*high*) or its city (*medium*). Platform addresses (support@yelp.com, noreply…) are dropped. Each email shows where it was seen (e.g. "in a BBB search snippet that names the business and shows its phone"). A high-confidence email becomes the lead's contact email. No email guessing or mail-server probing.
+
+Expect most no-website businesses to have no findable email; the phone and owner name are usually the way in. Florida also collects an email on every company's annual report; those are public records you could request from the Division of Corporations.
 
 ## Phone numbers
 

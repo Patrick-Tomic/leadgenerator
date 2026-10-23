@@ -165,7 +165,7 @@ async def verify_website(lead: dict, fetcher: PoliteFetcher, finders: list[Websi
             log.warning("%s lookup failed for %s: %s", finder.name, lead["name"], e)
             searches.append({"source": finder.name, "ran": False, "error": str(e)[:200]})
             continue
-        searches.append({"source": finder.name, "ran": True, "queries": found.get("queries", []),
+        searches.append({"source": finder.name, "ran": True, "conclusive": finder.conclusive, "queries": found.get("queries", []),
                          "results": len(found.get("checked", [])), "directories": found.get("directories", [])})
         for c in found["candidates"]:
             cands.append({**c, "base_identity": c.get("base_identity")})
@@ -190,12 +190,22 @@ async def verify_website(lead: dict, fetcher: PoliteFetcher, finders: list[Websi
                                if check.get("check_status") == "ok" else (None, []))
         # Places data may only be used transiently: its identity counts only once our own
         # fetch of the site confirms it.
-        identity = page_level or "low" if c.get("transient") else _combine(c.get("base_identity"), page_level)
+        if c.get("strict"):
+            # Guessed addresses prove nothing by themselves: only the business's phone, or its
+            # name plus street address, on the page makes it theirs. Anything else is someone else's site.
+            identity = "high" if page_level == "high" else "low"
+        elif c.get("transient"):
+            identity = page_level or "low"
+        else:
+            identity = _combine(c.get("base_identity"), page_level)
         confirmed = c["source"] == "manual" or page_level in ("high", "medium")
         results.append({**c, **{k: v for k, v in check.items() if k != "html"}, "page_identity": page_level,
                         "identity": identity, "confirmed": confirmed, "match_evidence": c["evidence"] + page_ev,
                         "checked_at": db.now() if check.get("check_status") != "unchecked" else None})
 
+    # A guessed address that isn't clearly theirs is someone else's site: drop it entirely
+    # rather than showing it as a "possible website".
+    results = [r for r in results if not (r.get("strict") and r["identity"] != "high")]
     state, best = _derive_state(results, searches)
     real = [r for r in results if r["identity"] in ("high", "medium") and r["check_status"] not in ("dns", "social", "directory")]
     conflict = len({normalize_domain(r.get("final_url") or r["url"]) for r in real}) > 1
@@ -248,6 +258,8 @@ def _derive_state(results: list[dict], searches: list[dict]) -> tuple[str, dict 
     if weak:
         return "possible_match", weak[0]
     social = next((r for r in results if r["check_status"] == "social"), None)
-    if any(s["ran"] for s in searches):
+    # Only a real search that found nothing supports "no website found"; guessing addresses
+    # and coming up empty proves nothing.
+    if any(s["ran"] and s.get("conclusive", True) for s in searches):
         return "none_found", social
     return "unknown", social

@@ -3,12 +3,12 @@ scope and, if so, score it with that customer's profile. Pure computation over d
 already in the DB, so re-running it after a profile change costs no network requests."""
 import logging
 
-from . import db, profiles
+from . import db, profiles, visibility
 from .dedup import normalize_phone
 from .scoring import exclusion_reason, score_lead, summarize
 
 # Bump when the scoring logic changes so stored scores are recomputed at startup.
-SCORING_VERSION = 3
+SCORING_VERSION = 4
 
 log = logging.getLogger(__name__)
 
@@ -41,6 +41,7 @@ def qualify(business: dict, profile: dict, industries: set[str], areas: set[str]
         return None
     findings = business.get("findings") or []
     facts = {**facts_of(findings), "phone_sources": phone_sources(business["id"], business.get("phone")) if business.get("id") else 0}
+    facts["visibility"] = visibility.estimate(business, facts, db.lead_sources(business["id"]) if business.get("id") else [])
     scored = score_lead({**business, "email": listed_email(business)}, findings, profile, facts)
     return {**scored, "summary": summarize(business, business.get("website_status"), scored["opportunities"],
                                            facts, profile, scored["explanation"])}

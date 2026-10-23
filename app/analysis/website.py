@@ -26,6 +26,16 @@ CHAT_SIGNS = {
     "chatbot": "chatbot", "botpress": "Botpress", "manychat": "ManyChat", "leadconnector": "LeadConnector/GHL",
     "ngageics": "Ngage", "apexchat": "ApexChat", "webchat": "web chat",
 }
+# Embedded review widgets: a business showcasing many reviews is usually well established.
+REVIEW_WIDGET_SIGNS = {
+    "birdeye": "Birdeye", "podium": "Podium", "trustindex": "Trustindex", "elfsight": "Elfsight reviews",
+    "embedsocial": "EmbedSocial", "grade.us": "Grade.us", "nicejob": "NiceJob", "trustpilot": "Trustpilot",
+    "yotpo": "Yotpo", "reviews.io": "Reviews.io", "reviewsonmywebsite": "Reviews on My Website", "shapo.io": "Shapo",
+    "featurable": "Featurable", "widget.reviewability": "Reviewability",
+}
+SOCIAL_LINK_HOSTS = {"facebook.com": "Facebook", "instagram.com": "Instagram", "linkedin.com": "LinkedIn", "x.com": "X",
+                     "twitter.com": "X", "youtube.com": "YouTube", "tiktok.com": "TikTok", "yelp.com": "Yelp",
+                     "nextdoor.com": "Nextdoor", "pinterest.com": "Pinterest"}
 BUILDER_SIGNS = {
     "wix.com": "Wix", "squarespace": "Squarespace", "weebly": "Weebly", "godaddy": "GoDaddy Website Builder",
     "wp-content": "WordPress", "duda": "Duda", "webflow": "Webflow", "shopify": "Shopify", "jimdo": "Jimdo",
@@ -43,7 +53,7 @@ YEAR_RE = re.compile(r"(?:©|&copy;|copyright)\s*(?:\d{4}\s*[-–]\s*)?((?:19|20
 
 
 # Bump when checks change so older audits get re-run (see db.unanalyzed).
-AUDIT_VERSION = 3
+AUDIT_VERSION = 4  # 4: review widgets, social links, site size (for the "how well known" estimate)
 LINK_CHECK_LIMIT = 8      # internal links checked per site (politeness: ~2 s apart)
 RETRY_DELAY = 5.0         # seconds before re-trying a site that failed to load
 # Calls to action that promise an online way to book or get a quote.
@@ -263,6 +273,11 @@ def inspect_html(html: str, url: str) -> tuple[list[dict], dict]:
         if (el.get("href") or "").strip() not in ("", "#") or el.name == "button"
     })[:5]
     facts["internal_links"] = _internal_links(soup, url)
+    facts["internal_link_count"] = len(facts["internal_links"])
+    facts["review_widgets"] = sorted({v for k, v in REVIEW_WIDGET_SIGNS.items() if k in lower})
+    facts["social_links"] = sorted({name for a in soup.find_all("a", href=True)
+                                    for host, name in SOCIAL_LINK_HOSTS.items()
+                                    if (urlparse(a["href"]).netloc.lower().removeprefix("www.").removeprefix("m.") == host)})
 
     booking = sorted({v for k, v in BOOKING_SIGNS.items() if k in lower})
     facts["booking"] = booking

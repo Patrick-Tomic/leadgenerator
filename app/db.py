@@ -20,6 +20,8 @@ from .profiles import profile_hash
 
 _lock = threading.RLock()
 _conn: sqlite3.Connection | None = None
+_path: Path | None = None
+_instance_lock = None   # open file holding the single-server lock (see acquire_server_lock)
 
 JSON_COLS = ("raw", "findings", "opportunities", "profile", "explanation", "fields", "metadata", "match_evidence", "flags",
              "license_evidence")
@@ -44,11 +46,49 @@ def use(path: Path | str) -> sqlite3.Connection:
     with _lock:
         if _conn is not None:
             _conn.close()
+        global _path
         Path(path).parent.mkdir(parents=True, exist_ok=True)
-        _conn = sqlite3.connect(path, check_same_thread=False)
+        # Wait up to 30 s for another writer instead of failing after the default 5 s.
+        _conn = sqlite3.connect(path, check_same_thread=False, timeout=30)
         _conn.row_factory = sqlite3.Row
+        _conn.execute("PRAGMA busy_timeout = 30000")
+        # WAL: reads (the web pages) keep working while background work writes.
+        try:
+            _conn.execute("PRAGMA journal_mode = WAL")
+        except sqlite3.OperationalError:
+            pass  # another process has the file open right now; WAL is applied on a later start
+        _path = Path(path)
         migrations.migrate(_conn, Path(path))
     return _conn
+
+
+class AlreadyRunning(RuntimeError):
+    pass
+
+
+def acquire_server_lock() -> None:
+    """Allow one app server per database. Two servers would both run background discovery
+    and website checks on the same file and block each other ("database is locked").
+    The lock is released automatically when the process exits, even if it crashes."""
+    import fcntl
+    import os
+    global _instance_lock
+    conn()
+    lock_path = Path(str(_path) + ".server.lock")
+    fh = open(lock_path, "a+")
+    try:
+        fcntl.flock(fh, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except BlockingIOError:
+        fh.seek(0)
+        owner = fh.read().strip() or "unknown"
+        fh.close()
+        raise AlreadyRunning(f"Another Lead Engine server is already using {_path.name} (pid {owner}). "
+                             f"Open that one in your browser, or stop it first (kill {owner}).")
+    fh.seek(0)
+    fh.truncate()
+    fh.write(str(os.getpid()))
+    fh.flush()
+    _instance_lock = fh
 
 
 def conn() -> sqlite3.Connection:
@@ -115,6 +155,14 @@ def _priority(b: dict) -> int:
         if s <= b["lat"] <= n and w <= b["lon"] <= e:
             return 0
     return 1
+
+
+def refresh_priorities() -> None:
+    """Recompute website-check priority after PRIORITY_AREAS changes (cheap SQL, run at startup)."""
+    boxes = [config.AREAS[a]["bbox"] for a in config.PRIORITY_AREAS]
+    cond = " OR ".join("(lat BETWEEN ? AND ? AND lon BETWEEN ? AND ?)" for _ in boxes) or "0"
+    args = [x for s, w, n, e in boxes for x in (s, n, w, e)]
+    _write(f"UPDATE leads SET priority = CASE WHEN {cond} THEN 0 ELSE 1 END", args)
 
 
 def upsert_business(b: dict, area: str | None = None, commit: bool = True) -> str:
@@ -315,10 +363,21 @@ def unanalyzed(limit: int) -> list[dict]:
     """Businesses needing an audit: never audited first, then ones audited by an older
     version of the checks (so existing leads gain new checks such as broken links)."""
     from .analysis.website import AUDIT_VERSION
-    rows = conn().execute(
-        """SELECT * FROM leads WHERE analyzed_at IS NULL OR audit_version < ?
-           ORDER BY analyzed_at IS NOT NULL, priority, (website IS NULL), discovered_at LIMIT ?""", (AUDIT_VERSION, limit)
-    ).fetchall()
+    c = conn()
+    # 1) Already-scored leads (grade C and up) checked by an older version: re-check first,
+    #    so the leads you actually see get the newest checks. A join, not a per-row
+    #    subquery: over ~100k businesses the subquery version took minutes.
+    rows = c.execute(
+        """SELECT l.* FROM customer_leads cl JOIN leads l ON l.id = cl.lead_id
+           WHERE cl.score >= 20 AND l.analyzed_at IS NOT NULL AND l.audit_version < ?
+           GROUP BY l.id ORDER BY MAX(cl.score) DESC LIMIT ?""", (AUDIT_VERSION, limit)).fetchall()
+    if len(rows) < limit:
+        taken = [r["id"] for r in rows]
+        not_in = f"AND id NOT IN ({','.join('?' * len(taken))})" if taken else ""
+        rows += c.execute(
+            f"""SELECT * FROM leads WHERE (analyzed_at IS NULL OR audit_version < ?) {not_in}
+                ORDER BY analyzed_at IS NOT NULL, priority, (website IS NULL), (id * 7919) % 104729 LIMIT ?""",
+            (AUDIT_VERSION, *taken, limit - len(rows))).fetchall()
     return [_row(r) for r in rows]
 
 
@@ -387,6 +446,17 @@ def sync_customer(profile: dict) -> tuple[int, bool]:
 
 def set_scoring_version(customer_id: int, version: int) -> None:
     _write("UPDATE customers SET scoring_version=? WHERE id=?", (version, customer_id))
+
+
+def get_setting(customer_id: int, key: str, default=None):
+    r = conn().execute("SELECT value FROM customer_settings WHERE customer_id=? AND key=?", (customer_id, key)).fetchone()
+    return json.loads(r[0]) if r and r[0] else default
+
+
+def set_setting(customer_id: int, key: str, value) -> None:
+    _write("""INSERT INTO customer_settings (customer_id, key, value, updated_at) VALUES (?, ?, ?, ?)
+              ON CONFLICT (customer_id, key) DO UPDATE SET value=excluded.value, updated_at=excluded.updated_at""",
+           (customer_id, key, json.dumps(value), now()))
 
 
 def get_customer(slug: str) -> dict | None:

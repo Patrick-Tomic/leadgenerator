@@ -323,7 +323,7 @@ def test_manual_website_correction(tmpdb, monkeypatch):
 
     audited = []
 
-    async def fake_audit(b, fetcher):
+    async def fake_audit(b, fetcher, finders=None):
         audited.append(b["website"])
         return {"website_status": "ok", "final_url": b["website"], "findings": [f("no_chat", "medium", "low")]}
     monkeypatch.setattr(pipeline, "analyze_business", fake_audit)
