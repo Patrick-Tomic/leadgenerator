@@ -193,6 +193,7 @@ def lead(lead_id: int, customer: str | None = None):
 class StatusUpdate(BaseModel):
     status: str | None = None
     notes: str | None = None
+    follow_up_days: int | None = None   # with status "call_later": call back after this many days (default 3)
 
 
 @app.post("/api/leads/{lead_id}")
@@ -202,8 +203,34 @@ def update(lead_id: int, body: StatusUpdate, customer: str | None = None):
     fields = body.model_dump(exclude_none=True)
     if "status" in fields and fields["status"] not in db.STATUSES:
         raise HTTPException(400, f"status must be one of {db.STATUSES}")
+    days = fields.pop("follow_up_days", None)
+    if fields.get("status") == "call_later":
+        from datetime import date, timedelta
+        days = 3 if days is None else max(0, min(days, 365))
+        fields["emailed_at"] = db.now()
+        fields["follow_up_at"] = (date.today() + timedelta(days=days)).isoformat()
     db.update_lead(cust["id"], lead_id, **fields)
     return _public(db.get_lead(cust["id"], lead_id))
+
+
+@app.get("/api/call-later")
+def call_later_list(customer: str | None = None):
+    """Businesses you emailed and plan to call, soonest call-back first."""
+    from datetime import date
+    from . import emails
+    from .owners import people_for
+    cust = _customer(customer)
+    today = date.today().isoformat()
+    rows = []
+    for lead in db.call_later(cust["id"]):
+        rows.append({"id": lead["id"], "name": lead["name"], "city": lead["city"], "phone": lead["phone"],
+                     "email": lead["email"] or next((e["email"] for e in emails.emails_for(lead["id"])), None),
+                     "industry_label": config.INDUSTRIES.get(lead["industry"], {}).get("label", lead["industry"]),
+                     "owners": [{"name": p["name"], "title": p["title"]} for p in people_for(lead["id"])[:2]],
+                     "emailed_at": lead["emailed_at"], "follow_up_at": lead["follow_up_at"], "notes": lead["notes"],
+                     "due": bool(lead["follow_up_at"]) and lead["follow_up_at"] <= today,
+                     "overdue": bool(lead["follow_up_at"]) and lead["follow_up_at"] < today})
+    return {"rows": rows, "due_count": sum(r["due"] for r in rows)}
 
 
 @app.post("/api/leads/{lead_id}/brief")

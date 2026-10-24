@@ -114,3 +114,33 @@ def test_every_finding_with_a_talking_point_has_a_teaser():
     from app.outreach import HINTS
     missing = [c for c, e in CATALOG.items() if e.get("talk") and c not in HINTS and c != "new_registration"]
     assert missing == []
+
+
+def _no_web_lead(**kw):
+    return {"id": 1, "name": "Joe's Grill", "industry_label": "Restaurants", "city": "Tampa", "email": "joe@grill.com",
+            "website": None, "final_url": None, "website_state": "unknown", "google_listing": None,
+            "findings": [{"code": "website_unknown", "title": "t", "evidence": "e", "severity": "low", "confidence": "low"}],
+            "explanation": {}, **kw}
+
+
+@pytest.mark.parametrize("google,expect,claim_none", [
+    (None, "make sure your Google Business Profile is set up", False),
+    (0, "couldn't find a website or a Google Business Profile for you", True),
+    (1, "Google listing and didn't see a website linked to it", False),
+])
+def test_no_website_email_pitches_the_opportunity(google, expect, claim_none):
+    d = draft(_no_web_lead(google_listing=google), SENDER)
+    assert expect in d["body"] and "people look for restaurants in Tampa online first" in d["body"]
+    assert "web app" in d["body"] and d["subjects"][0] == "Getting Joe's Grill found online"
+    assert ("Google Business Profile for you" in d["body"]) == claim_none            # only claimed when checked
+    assert any("map listings only" in w for w in d["warnings"])                        # unconfirmed: check first
+    for banned in ("losing", "lost", "competitor"):
+        assert banned not in d["body"].lower()
+
+
+def test_confirmed_no_website_and_followup():
+    d = draft(_no_web_lead(website_state="none_found", google_listing=0), SENDER)
+    assert d["body"].count("I looked for Joe's Grill online") == 1
+    assert not any("map listings only" in w for w in d["warnings"])
+    f = draft(_no_web_lead(), SENDER, "followup")
+    assert "getting Joe's Grill found online" in f["body"] and f["subjects"][0].startswith("Re:")

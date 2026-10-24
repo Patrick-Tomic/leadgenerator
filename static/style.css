@@ -126,3 +126,7 @@ td.num { font-variant-numeric: tabular-nums; font-weight: 700; }
 .chip.vis-low { color: var(--good); } .chip.vis-medium { color: var(--med); } .chip.vis-high { color: var(--high); }
 .pager { justify-content: space-between; align-items: center; margin-top: 10px; }
 #view-noweb { overflow-x: auto; }
+.badge { display: inline-block; min-width: 18px; padding: 0 6px; border-radius: 999px; background: var(--high); color: #fff; font-size: 11px; line-height: 18px; text-align: center; margin-left: 4px; }
+#cl-table tr.overdue td { background: color-mix(in srgb, var(--high) 8%, transparent); }
+#cl-table tr.due td { background: color-mix(in srgb, var(--med) 8%, transparent); }
+#view-calllater { overflow-x: auto; }

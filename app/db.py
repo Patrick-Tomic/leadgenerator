@@ -25,12 +25,12 @@ _instance_lock = None   # open file holding the single-server lock (see acquire_
 
 JSON_COLS = ("raw", "findings", "opportunities", "profile", "explanation", "fields", "metadata", "match_evidence", "flags",
              "license_evidence")
-STATUSES = ("new", "saved", "contacted", "won", "not_fit", "skipped")
+STATUSES = ("new", "saved", "call_later", "contacted", "won", "not_fit", "skipped")
 BUSINESS_COLS = ("id", "source", "source_id", "name", "industry", "address", "city", "lat", "lon", "phone", "email",
                  "website", "raw", "discovered_at", "last_seen_at", "analyzed_at", "website_status", "final_url", "findings",
-                 "website_state", "website_conflict", "website_checked_at")
+                 "website_state", "website_conflict", "website_checked_at", "google_listing")
 CUSTOMER_COLS = ("score", "grade", "opportunities", "explanation", "summary", "status", "notes", "ai_brief", "status_changed_at",
-                 "qualified_at")
+                 "qualified_at", "emailed_at", "follow_up_at")
 LEAD_SELECT = (", ".join(f"l.{c}" for c in BUSINESS_COLS) + ", " + ", ".join(f"cl.{c}" for c in CUSTOMER_COLS)
                + ", cl.customer_id FROM customer_leads cl JOIN leads l ON l.id = cl.lead_id")
 READY = "cl.status='new' AND l.analyzed_at IS NOT NULL AND cl.score >= ?"
@@ -517,13 +517,20 @@ def list_leads(customer_id: int, status: str | None = None, limit: int = 200) ->
 
 
 def update_lead(customer_id: int, lead_id: int, **fields) -> None:
-    fields = {k: v for k, v in fields.items() if k in ("status", "notes", "ai_brief")}
+    fields = {k: v for k, v in fields.items() if k in ("status", "notes", "ai_brief", "emailed_at", "follow_up_at")}
     if not fields:
         return
     if "status" in fields:
         fields["status_changed_at"] = now()
     cols = ", ".join(f"{k}=?" for k in fields)
     _write(f"UPDATE customer_leads SET {cols} WHERE customer_id=? AND lead_id=?", (*fields.values(), customer_id, lead_id))
+
+
+def call_later(customer_id: int) -> list[dict]:
+    """Leads you emailed and plan to call, soonest call-back first."""
+    return [_row(r) for r in conn().execute(
+        f"SELECT {LEAD_SELECT} WHERE cl.customer_id=? AND cl.status='call_later' ORDER BY cl.follow_up_at, cl.emailed_at",
+        (customer_id,)).fetchall()]
 
 
 def counts(customer_id: int, min_score: int = 1) -> dict:

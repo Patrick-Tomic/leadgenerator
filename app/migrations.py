@@ -417,9 +417,18 @@ def m009_people_and_emails(c: sqlite3.Connection) -> None:
     """)
 
 
+def m010_follow_up(c: sqlite3.Connection) -> None:
+    """When you emailed a lead and when to call them back ("Emailed, call later")."""
+    _run(c, """
+        ALTER TABLE customer_leads ADD COLUMN emailed_at TEXT;
+        ALTER TABLE customer_leads ADD COLUMN follow_up_at TEXT;
+        CREATE INDEX idx_customer_leads_follow_up ON customer_leads (customer_id, status, follow_up_at)
+    """)
+
+
 MIGRATIONS = [m001_customers_and_discovery, m002_evidence_scoring, m003_provenance_websites_registrations,
               m004_state_licenses, m005_priority, m006_customer_settings, m007_google_listing, m008_indexes,
-              m009_people_and_emails]
+              m009_people_and_emails, m010_follow_up]
 LATEST = len(MIGRATIONS)
 
 

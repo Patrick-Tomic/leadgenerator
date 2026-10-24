@@ -14,6 +14,7 @@
     <button class="tab" data-view="pipeline">Pipeline</button>
     <button class="tab" data-view="registrations">New registrations</button>
     <button class="tab" data-view="noweb">No web presence</button>
+    <button class="tab" data-view="calllater">Call later <span id="due-badge" class="badge" hidden></span></button>
   </nav>
   <select id="customer" title="Customer" hidden></select>
   <div id="status" class="status">Loading…</div>
@@ -34,6 +35,7 @@
         <option value="won">Won</option>
         <option value="not_fit">Not a fit</option>
         <option value="skipped">Skipped</option>
+        <option value="call_later">Emailed, call later</option>
       </select>
       <select id="grade-filter">
         <option value="">All grades</option>
@@ -69,6 +71,15 @@
       <tbody></tbody>
     </table>
     <div class="toolbar pager"><button id="nw-prev" class="secondary">← Previous</button><span id="nw-count" class="muted"></span><button id="nw-next" class="secondary">Next →</button></div>
+  </section>
+
+  <section id="view-calllater" hidden>
+    <p class="muted">Businesses you've emailed and plan to call. Soonest call-back first; overdue ones are highlighted.
+      Open one to log the call (Mark contacted, Not a fit…) or to change the call-back date.</p>
+    <table id="cl-table">
+      <thead><tr><th>Call by</th><th>Business</th><th>Owner</th><th>Phone</th><th>Email</th><th>Emailed</th><th>Notes</th><th></th></tr></thead>
+      <tbody></tbody>
+    </table>
   </section>
 
   <section id="view-registrations" hidden>
@@ -129,6 +140,7 @@
         <button class="secondary" data-copy="subject">Copy subject</button>
         <button data-copy="body">Copy email</button>
         <a class="button secondary email-open" target="_blank" rel="noopener" hidden>Open in email app</a>
+        <button class="secondary" data-act="call_later">Mark as emailed (call later)</button>
         <span class="muted email-status"></span>
       </div>
       <details class="sender-form">
@@ -140,6 +152,7 @@
     <div class="brief" hidden><h3>AI brief</h3><div class="brief-body"></div></div>
     <label class="notes-label">Notes<textarea class="notes" rows="2" placeholder="Call notes, who you spoke with…"></textarea></label>
     <div class="actions">
+      <button data-act="call_later" class="secondary">📧 Emailed, call later</button>
       <button data-act="contacted">✓ Mark contacted</button>
       <button data-act="saved" class="secondary">Save for later</button>
       <button data-act="not_fit" class="secondary">Not a fit</button>

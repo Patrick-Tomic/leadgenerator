@@ -87,6 +87,43 @@ def _noticed(f: dict) -> str:
     return f"noticed {'what looks like ' if probable else ''}{phrase}"
 
 
+def _no_web_body(lead: dict, where_label: str) -> tuple[list[str], list[str], list[str]]:
+    """Opportunity pitch for a business with no website: (body lines, subjects, warnings).
+    Never claims they have no website unless a search confirmed it, and only says they have
+    no Google listing when a Google check confirmed that."""
+    name = lead["name"]
+    industry = (lead.get("industry_label") or "local businesses").lower()
+    city = lead.get("city")
+    searched = lead.get("website_state") == "none_found"
+    google = lead.get("google_listing")   # 1 found, 0 confirmed none, None not checked
+    warnings = []
+    app_phrase = "a website (or a simple web app with things like online quote requests)"
+    if google == 0:
+        seen = (f"I looked for {name} online and couldn't find a website or a Google Business Profile for you." if searched
+                else f"I came across {name} and couldn't find a website or a Google Business Profile for you.")
+        offer = f"We could build you {app_phrase} and set up your Google Business Profile, so people searching on Google and Maps can find you."
+    elif google == 1:
+        seen = (f"I looked for {name} online and found your Google listing, but no website." if searched
+                else f"I came across {name}'s Google listing and didn't see a website linked to it.")
+        offer = f"We could build you {app_phrase} to go with it, so people who find you on Google can see more and get in touch."
+    else:
+        seen = (f"I looked for {name} online and couldn't find a website for you." if searched
+                else f"I came across {name} and didn't see a website listed for you.")
+        offer = (f"We could build you {app_phrase} and make sure your Google Business Profile is set up, "
+                 "so people searching on Google and Maps can find you.")
+        warnings.append("Google listing not checked: the email suggests setting one up without claiming they lack one. "
+                        "Use Check Google on the No web presence tab to confirm.")
+    if not searched:
+        warnings.append("\"No website\" comes from map listings only. Search Google for the business before sending.")
+    search_phrase = f"{industry} in {city}" if city else industry
+    body = [seen, "",
+            f"There's a real opportunity there: a lot of people look for {search_phrase} online first. {offer}",
+            "", "I'd be happy to show you what that could look like for you; it only takes a few minutes. "
+                "Would you be open to a quick call this week?"]
+    subjects = [f"Getting {name} found online", f"Website idea for {name}", f"Quick idea for {name}"]
+    return body, subjects, warnings
+
+
 CTA = "I'd be happy to walk you through what I found; it only takes a few minutes. Would you be open to a quick call this week?"
 OPT_OUT = "If you'd rather not hear from me, just reply \"no thanks\" and I won't email again."
 
@@ -125,6 +162,26 @@ def draft(lead: dict, sender: dict, variant: str = "short") -> dict:
     intro = f"I'm {sender_name} with {company}. We help local businesses with {helps}."
 
     where = domain or "your website"
+    no_web = not domain and lead.get("website_state") in (None, "unknown", "none_found") and \
+        not (main and main["code"] == "new_registration")
+    if no_web:
+        nw_body, nw_subjects, nw_warnings = _no_web_body(lead, where)
+        warnings = [w for w in warnings if not w.startswith("No verified or probable problem")] + nw_warnings
+        if variant == "followup":
+            body = [greeting, "", f"Following up on my note from last week about getting {name} found online.",
+                    "I'm still happy to show you what a website and Google presence could look like for you. "
+                    "Would a quick call this week work?"]
+            subjects = [f"Re: Getting {name} found online", f"Following up, {name}", "Quick follow-up"]
+        else:
+            intro_nw = f"I'm {sender_name} with {company}. We build websites and help local businesses get found online."
+            body = [greeting, "", intro_nw, ""] + nw_body
+            subjects = nw_subjects
+        body += ["", OPT_OUT, "", "Thanks,"]
+        text = "\n".join(body).replace("\n\n\n", "\n\n")
+        return {"variant": variant, "variants": VARIANTS, "subjects": subjects, "subject": subjects[0], "body": text,
+                "to": lead.get("email"), "warnings": warnings, "verify": [],
+                "mailto": (f"mailto:{lead['email']}?subject={quote(subjects[0])}&body={quote(text)}" if lead.get("email") else None),
+                "based_on": "No website found" if lead.get("website_state") == "none_found" else "No website listed"}
     if variant == "followup":
         body = [greeting, "",
                 "Following up on my note from last week" + (f" about {domain}." if domain else "."),

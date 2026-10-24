@@ -71,7 +71,9 @@ function renderLead(lead) {
   $(".name", node).textContent = lead.name;
   $(".meta", node).textContent = [lead.industry_label, lead.city || lead.address].filter(Boolean).join(" · ");
   $(".num", node).textContent = lead.score;
-  $(".grade", node).textContent = `Grade ${lead.grade}` + (lead.status !== "new" ? ` · ${lead.status.replace("_", " ")}` : "");
+  $(".grade", node).textContent = `Grade ${lead.grade}` + (lead.status === "call_later"
+    ? ` · emailed ${fmtDate(lead.emailed_at)}, call by ${fmtDate(lead.follow_up_at)}`
+    : lead.status !== "new" ? ` · ${lead.status.replace("_", " ")}` : "");
   $(".summary", node).textContent = lead.summary;
 
   const site = lead.final_url || lead.website;
@@ -134,6 +136,7 @@ function renderLead(lead) {
   $("#lead .notes").addEventListener("change", (e) => api(`/api/leads/${lead.id}`, { method: "POST", body: JSON.stringify({ notes: e.target.value }) }));
   $("#lead .actions").addEventListener("click", onAction);
   $("#lead .contact").addEventListener("click", onAction);
+  $("#lead .email-panel").addEventListener("click", (e) => { if (e.target.closest("button[data-act]")) onAction(e); });
   window.scrollTo(0, 0);
 }
 
@@ -243,6 +246,27 @@ function setupEmail(node, lead) {
   load().catch((err) => ($(".email-warnings", panel).textContent = err.message));
 }
 
+const fmtDate = (d) => d ? new Date(d.length === 10 ? d + "T12:00:00" : d).toLocaleDateString(undefined, { month: "short", day: "numeric" }) : "";
+
+async function loadCallLater() {
+  const d = await api("/api/call-later");
+  setDueBadge(d.due_count);
+  $("#cl-table tbody").innerHTML = d.rows.map((r) => `
+    <tr class="${r.overdue ? "overdue" : r.due ? "due" : ""}">
+      <td><strong>${esc(fmtDate(r.follow_up_at))}</strong>${r.overdue ? ` <span class="chip conf-unverified">overdue</span>` : r.due ? ` <span class="chip conf-probable">today</span>` : ""}</td>
+      <td>${esc(r.name)}<div class="muted">${esc(r.industry_label)}${r.city ? " · " + esc(r.city) : ""}</div></td>
+      <td>${r.owners.map((o) => `<div>${esc(o.name)} <span class="muted">${esc(o.title)}</span></div>`).join("") || `<span class="muted">—</span>`}</td>
+      <td>${r.phone ? `<a href="tel:${esc(r.phone)}">${esc(r.phone)}</a>` : `<span class="muted">—</span>`}</td>
+      <td>${r.email ? `<a href="mailto:${esc(r.email)}">${esc(r.email)}</a>` : `<span class="muted">—</span>`}</td>
+      <td>${esc(fmtDate(r.emailed_at))}</td>
+      <td class="muted">${esc((r.notes || "").slice(0, 80))}</td>
+      <td><button class="link-btn" data-open-cl="${r.id}">Open</button></td></tr>`).join("")
+    || `<tr><td colspan="8">Nothing here yet. After you email a business, click "Emailed, call later" on its page.</td></tr>`;
+}
+
+function setDueBadge(n) { $("#due-badge").hidden = !n; $("#due-badge").textContent = n || ""; }
+async function refreshDueBadge() { try { setDueBadge((await api("/api/call-later")).due_count); } catch {} }
+
 let nwOffset = 0;
 async function loadNoWeb() {
   const q = new URLSearchParams({ industry: $("#nw-industry").value, area: $("#nw-area").value, google: $("#nw-google").value,
@@ -302,6 +326,13 @@ async function onAction(e) {
     if (act === "brief") {
       btn.textContent = "Writing…";
       renderLead(await api(`/api/leads/${current.id}/brief`, { method: "POST" }));
+    } else if (act === "call_later") {
+      const days = prompt("Emailed. Call them back in how many days?", "3");
+      if (days === null) { btn.disabled = false; return; }
+      await api(`/api/leads/${current.id}`, { method: "POST",
+        body: JSON.stringify({ status: "call_later", follow_up_days: parseInt(days, 10) || 0, notes: $("#lead .notes").value }) });
+      refreshDueBadge();
+      await loadNext();
     } else if (act === "reviews") {
       btn.textContent = "Checking…";
       renderLead(await api(`/api/leads/${current.id}/reviews`, { method: "POST" }));
@@ -365,12 +396,19 @@ function show(view) {
   $("#view-pipeline").hidden = view !== "pipeline";
   $("#view-registrations").hidden = view !== "registrations";
   $("#view-noweb").hidden = view !== "noweb";
+  $("#view-calllater").hidden = view !== "calllater";
+  if (view === "calllater") loadCallLater().catch((e) => alert(e.message));
   if (view === "noweb") { nwOffset = 0; loadNoWeb().catch((e) => alert(e.message)); }
   if (view === "pipeline") loadPipeline();
   if (view === "registrations") loadRegistrations().catch((e) => alert(e.message));
 }
 
 $("#reg-all").addEventListener("change", () => loadRegistrations());
+$("#cl-table tbody").addEventListener("click", async (e) => {
+  const o = e.target.closest("[data-open-cl]");
+  if (!o) return;
+  show("next"); renderLead(await api(`/api/leads/${o.dataset.openCl}`));
+});
 ["#nw-industry", "#nw-area", "#nw-google", "#nw-owner", "#nw-email"].forEach((id) => $(id).addEventListener("change", () => { nwOffset = 0; loadNoWeb(); }));
 $("#nw-prev").addEventListener("click", () => { nwOffset = Math.max(0, nwOffset - 100); loadNoWeb(); });
 $("#nw-next").addEventListener("click", () => { nwOffset += 100; loadNoWeb(); });
@@ -468,4 +506,4 @@ $("#table tbody").addEventListener("click", async (e) => {
 setInterval(() => refreshStatus().catch(() => {}), 10000);
 // #lead=<id> opens a specific lead (shareable link); otherwise show the next best lead.
 const deepLink = location.hash.match(/lead=(\d+)/);
-loadCustomers().then(refreshStatus).then(() => deepLink ? api(`/api/leads/${deepLink[1]}`).then(renderLead).catch(loadNext) : loadNext());
+loadCustomers().then(refreshStatus).then(refreshDueBadge).then(() => deepLink ? api(`/api/leads/${deepLink[1]}`).then(renderLead).catch(loadNext) : loadNext());
